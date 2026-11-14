@@ -7,7 +7,7 @@
   },
   "scripts": {
     "release": "git checkout release && git merge origin/main && release-it && git checkout main && git merge origin/release && git push origin main",
-    "dev": "cross-env TURBOPACK_MEMORY_LIMIT=12288 next dev --port 4002 --turbo",
+    "dev": "cross-env TURBOPACK_MEMORY_LIMIT=4096 next dev --port 4002 --turbo",
     "server": "tsx server.ts",
     "dev:full": "concurrently \"npm run server\" \"npm run dev\"",
     "build": "next build",
@@ -151,6 +151,7 @@
     "prisma": "6.7.0",
     "query-string": "^9.2.1",
     "radix-ui": "^1.4.3",
+    "razorpay": "2.9.6",
     "react": "^18.3.1",
     "react-colorful": "^5.6.1",
     "react-daisyui": "5.0.5",

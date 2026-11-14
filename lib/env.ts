@@ -117,6 +117,20 @@ const env = {
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
   },
+
+  // Razorpay — workspace plan subscriptions
+  razorpay: {
+    keyId: process.env.RAZORPAY_KEY_ID || '',
+    keySecret: process.env.RAZORPAY_KEY_SECRET || '',
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
+  },
+
+  // Comma-separated emails that are always platform admins (bootstrap; more can be
+  // promoted from /admin/users).
+  platformAdminEmails: (process.env.PLATFORM_ADMIN_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
 };
 
 export default env;

@@ -1,6 +1,9 @@
 generator client {
-  provider = "prisma-client-js"
-  output   = "../node_modules/.prisma/client"
+  provider        = "prisma-client-js"
+  output          = "../node_modules/.prisma/client"
+  // One SQL query per findMany/findFirst with includes, instead of one round trip per
+  // relation level. The database is far from the app, so this matters a lot.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
@@ -151,6 +154,13 @@ model User {
   crmFieldValues         CrmFieldValue[]    @relation("CrmFieldValueUser")
   crmAiConversations     CrmAiConversation[]
   crmSuggestionDecisions CrmSuggestion[]    @relation("CrmSuggestionDecider")
+
+  // Platform (multi-tenant workspaces + admin)
+  isPlatformAdmin        Boolean            @default(false)
+  suspendedAt            DateTime?
+  suspendedReason        String?
+  ownedWorkspaces        Workspace[]        @relation("WorkspaceOwner")
+  platformAuditLogs      PlatformAuditLog[] @relation("PlatformAuditActor")
 }
 
 model Team {
@@ -192,7 +202,12 @@ model Team {
   crmSuggestions       CrmSuggestion[]
   crmBriefs            CrmBrief[]
 
+  // Workspace (tenant) this team belongs to
+  workspaceId          String?
+  workspace            Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
   @@index([billingId])
+  @@index([workspaceId])
 }
 
 model TeamMember {
@@ -2727,4 +2742,154 @@ model CrmBrief {
   refreshedAt DateTime @default(now())
 
   @@map("crm_briefs")
+}
+
+
+// ─── Platform: workspaces, plans, Razorpay billing, admin ───────────────────
+
+enum WorkspaceStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum BillingInterval {
+  MONTHLY
+  YEARLY
+}
+
+// A workspace is the tenant and the billing unit. It holds one or more teams;
+// its plan sets how many teams/seats it may have and which modules it gets.
+model Workspace {
+  id              String          @id @default(uuid())
+  name            String
+  slug            String          @unique
+  ownerId         String?
+  owner           User?           @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  status          WorkspaceStatus @default(ACTIVE)
+  suspendedReason String?
+  // Current plan. null or expired => the default (free) plan applies.
+  planId          String?
+  plan            PlatformPlan?   @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planExpiresAt   DateTime?
+  // "SUBSCRIPTION" when Razorpay drives the plan, "MANUAL" when a platform admin set it.
+  planSource      String          @default("MANUAL")
+  // Per-workspace admin overrides: { "crm": false, "mail": true }
+  moduleOverrides Json            @default("{}")
+  // Per-workspace limit overrides: { "maxTeams": 10, "maxMembers": 50, "maxStorageGb": 100 }
+  limitOverrides  Json            @default("{}")
+  billingEmail    String?
+  razorpayCustomerId String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  teams           Team[]
+  subscriptions   WorkspaceSubscription[]
+  payments        WorkspacePayment[]
+
+  @@index([ownerId])
+  @@index([planId])
+}
+
+model PlatformPlan {
+  id                    String   @id @default(uuid())
+  key                   String   @unique
+  name                  String
+  description           String?
+  currency              String   @default("INR")
+  // Amounts in the smallest unit (paise)
+  priceMonthly          Int      @default(0)
+  priceYearly           Int      @default(0)
+  // -1 = unlimited
+  maxTeams              Int      @default(1)
+  maxMembers            Int      @default(5)
+  maxStorageGb          Int      @default(5)
+  modules               String[] @default([])
+  features              String[] @default([])
+  isActive              Boolean  @default(true)
+  isPublic              Boolean  @default(true)
+  isDefault             Boolean  @default(false)
+  sortOrder             Int      @default(0)
+  // Razorpay plans are immutable; these are recreated when prices change.
+  razorpayPlanIdMonthly String?
+  razorpayPlanIdYearly  String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  workspaces            Workspace[]
+  subscriptions         WorkspaceSubscription[]
+}
+
+model WorkspaceSubscription {
+  id                     String          @id @default(uuid())
+  workspaceId            String
+  workspace              Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  planId                 String
+  plan                   PlatformPlan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  interval               BillingInterval
+  // Razorpay status: created | authenticated | active | pending | halted | cancelled | completed | expired | paused
+  status                 String          @default("created")
+  razorpaySubscriptionId String          @unique
+  razorpayPlanId         String
+  shortUrl               String?
+  currentStart           DateTime?
+  currentEnd             DateTime?
+  cancelAtPeriodEnd      Boolean         @default(false)
+  cancelledAt            DateTime?
+  createdById            String?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  payments               WorkspacePayment[]
+
+  @@index([workspaceId])
+  @@index([status])
+}
+
+model WorkspacePayment {
+  id                String                 @id @default(uuid())
+  workspaceId       String
+  workspace         Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscriptionId    String?
+  subscription      WorkspaceSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  razorpayPaymentId String                 @unique
+  razorpayInvoiceId String?
+  amount            Int
+  currency          String                 @default("INR")
+  // captured | authorized | failed | refunded
+  status            String
+  method            String?
+  email             String?
+  errorDescription  String?
+  createdAt         DateTime               @default(now())
+
+  @@index([workspaceId])
+  @@index([createdAt])
+}
+
+// Key/value platform settings (e.g. key "modules" => { "crm": true, "mail": false }).
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model PlatformAuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation("PlatformAuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+}
+
+// Razorpay webhook idempotency
+model RazorpayWebhookEvent {
+  id        String   @id
+  event     String
+  createdAt DateTime @default(now())
 }

@@ -5,6 +5,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { recordMetric } from '@/lib/metrics';
 import { createTeamSchema, validateWithSchema } from '@/lib/zod';
 import { getCurrentUser } from 'models/user';
+import { requireWorkspaceManager } from '@/lib/platform/workspace';
 
 export default async function handler(
   req: NextApiRequest,
@@ -55,10 +56,16 @@ const handlePOST = async (req: NextApiRequest, res: NextApiResponse) => {
     throw new ApiError(400, 'A team with the slug already exists.');
   }
 
+  // Optional target workspace; otherwise the user's own workspace is used.
+  const workspaceId =
+    typeof req.body?.workspaceId === 'string' && req.body.workspaceId ? req.body.workspaceId : undefined;
+  if (workspaceId) await requireWorkspaceManager(user.id, workspaceId);
+
   const team = await createTeam({
     userId: user.id,
     name,
     slug,
+    workspaceId,
   });
 
   recordMetric('team.created');

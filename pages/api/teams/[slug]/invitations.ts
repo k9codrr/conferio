@@ -18,6 +18,7 @@ import { recordMetric } from '@/lib/metrics';
 import { extractEmailDomain, isEmailAllowed } from '@/lib/email/utils';
 import { Invitation, Role } from '@prisma/client';
 import { countTeamMembers } from 'models/teamMember';
+import { assertSeatAvailable } from '@/lib/platform/workspace';
 import {
   acceptInvitationSchema,
   deleteInvitationSchema,
@@ -150,6 +151,9 @@ Execution Time: 0.152 ms
     if (invitationExists) {
       throw new ApiError(400, 'An invitation already exists for this email.');
     }
+
+    // Workspace plan seat limit (pending email invites hold a seat).
+    await assertSeatAvailable(teamMember.teamId, { email, role, countPending: true });
 
     invitation = await createInvitation({
       teamId: teamMember.teamId,
@@ -293,6 +297,12 @@ const handlePUT = async (req: NextApiRequest, res: NextApiResponse) => {
       );
     }
   }
+
+  // Workspace plan seat limit (users already in the workspace don't need a new seat).
+  await assertSeatAvailable(invitation.team.id, {
+    userId: session?.user?.id,
+    role: invitation.role,
+  });
 
   const teamMember = await addTeamMember(
     invitation.team.id,

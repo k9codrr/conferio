@@ -5,6 +5,7 @@ import { isEmailAllowed } from '@/lib/email/utils';
 import env from '@/lib/env';
 import { ApiError } from '@/lib/errors';
 import { createTeam, getTeam, isTeamExists } from 'models/team';
+import { createWorkspace } from '@/lib/platform/workspace';
 import { createUser, getUser } from 'models/user';
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { recordMetric } from '@/lib/metrics';
@@ -112,10 +113,13 @@ const handlePOST = async (req: NextApiRequest, res: NextApiResponse) => {
   // Create team if user is not invited
   // So we can create the team with the user as the owner
   if (!invitation) {
+    // New sign-ups get their own workspace (tenant), named after their first team.
+    const workspace = await createWorkspace({ ownerId: user.id, name: team, billingEmail: email });
     userTeam = await createTeam({
       userId: user.id,
       name: team,
       slug: slugify(team),
+      workspaceId: workspace.id,
     });
   } else {
     userTeam = await getTeam({ slug: invitation.team.slug });

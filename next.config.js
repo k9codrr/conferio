@@ -265,7 +265,9 @@ const webpack = require('webpack');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-   turbopack: {},
+  // Pin the project root: a stray package-lock.json in the user's home folder otherwise
+  // makes Turbopack treat the whole home directory as the workspace (slow compiles).
+  turbopack: { root: __dirname },
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {
@@ -293,7 +295,7 @@ config.resolve.alias["yjs"] = require.resolve("yjs");
     ignoreBuildErrors: true,
   },
   reactStrictMode: true,
-  allowedDevOrigins: ['conferio.xivago.com'],
+  allowedDevOrigins: ['app.conferio.co', 'conferio.xivago.com'],
   devIndicators: false,
   env: {
     DATABASE_URL: process.env.DATABASE_URL,

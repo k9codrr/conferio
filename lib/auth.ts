@@ -8,6 +8,7 @@
 // import GoogleProvider from 'next-auth/providers/google'
 // import { PrismaAdapter } from '@next-auth/prisma-adapter'
 // import { prisma } from './prisma'
+import { cachedPrismaAdapter } from './auth-adapter'
 // import { v4 as uuidv4 } from 'uuid'
 // import { DayOfWeek } from '@prisma/client'
 
@@ -874,7 +875,8 @@ async function generateUsername(name: string): Promise<string> {
 // }
 
 export const authOptions: NextAuthOptions = {
-  adapter: PrismaAdapter(prisma),
+  // Cached session lookups (lib/auth-adapter.ts): this config is used by ~165 routes.
+  adapter: cachedPrismaAdapter,
   secret: process.env.NEXTAUTH_SECRET!,
   providers: [
     GoogleProvider({

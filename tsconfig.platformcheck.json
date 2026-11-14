@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "incremental": true, "tsBuildInfoFile": "./tsconfig.platformcheck.tsbuildinfo" },
+  "include": [
+    "next-env.d.ts",
+    "types/**/*.d.ts",
+    "lib/platform/**/*.ts",
+    "pages/api/admin/**/*.ts",
+    "pages/api/workspace/**/*.ts",
+    "pages/api/platform/**/*.ts",
+    "pages/api/webhooks/razorpay.ts",
+    "pages/api/dashboard/activity.ts",
+    "pages/api/teams/index.ts",
+    "pages/api/teams/[[]slug]/invitations.ts",
+    "pages/api/auth/join.ts",
+    "pages/admin/**/*.tsx",
+    "pages/workspace/**/*.tsx",
+    "pages/module-unavailable.tsx",
+    "components/platform/**/*.tsx",
+    "hooks/usePlatformAccess.ts",
+    "store/teamStore.ts",
+    "middleware.ts",
+    "models/team.ts",
+    "lib/nextAuth.ts",
+    "lib/auth-adapter.ts",
+    "lib/request-cache.ts",
+    "lib/platform/identity.ts",
+    "lib/env.ts",
+    "lib/dashboard/activity-feed.ts",
+    "components/dashboard/ActivityFeedCard.tsx"
+  ]
+}

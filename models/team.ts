@@ -6,18 +6,25 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getCurrentUser } from './user';
 import { normalizeUser } from './user';
 import { validateWithSchema, teamSlugSchema } from '@/lib/zod';
+import { assertCanCreateTeam, ensureWorkspaceForUser } from '@/lib/platform/workspace';
 
 export const createTeam = async (param: {
   userId: string;
   name: string;
   slug: string;
+  // Workspace (tenant) to create the team in; defaults to the user's own workspace.
+  workspaceId?: string;
 }) => {
   const { userId, name, slug } = param;
+
+  const workspaceId = param.workspaceId ?? (await ensureWorkspaceForUser(userId)).id;
+  await assertCanCreateTeam(workspaceId);
 
   const team = await prisma.team.create({
     data: {
       name,
       slug,
+      workspaceId,
     },
   });
 

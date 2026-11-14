@@ -1,9 +1,14 @@
 import { prisma } from '@/lib/prisma';
+import { caches } from '@/lib/request-cache';
+
+// Sessions are cached in-process (lib/request-cache.ts); deletions are rare, so drop the whole cache.
 
 export const deleteManySessions = async ({ where }) => {
-  return await prisma.session.deleteMany({
+  const result = await prisma.session.deleteMany({
     where,
   });
+  caches.sessions.clear();
+  return result;
 };
 
 export const findFirstSessionOrThrown = async ({ where }) => {
@@ -19,7 +24,9 @@ export const findManySessions = async ({ where }) => {
 };
 
 export const deleteSession = async ({ where }) => {
-  return await prisma.session.delete({
+  const result = await prisma.session.delete({
     where,
   });
+  caches.sessions.clear();
+  return result;
 };

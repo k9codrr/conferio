@@ -9,7 +9,6 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import EmailProvider from 'next-auth/providers/email';
 import GitHubProvider from 'next-auth/providers/github';
 import GoogleProvider from 'next-auth/providers/google';
-import { PrismaAdapter } from '@next-auth/prisma-adapter';
 import type { Provider } from 'next-auth/providers';
 import { setCookie, getCookie } from 'cookies-next';
 import { encode, decode } from 'next-auth/jwt';
@@ -18,6 +17,9 @@ import { randomUUID } from 'crypto';
 import { Role } from '@prisma/client';
 import { getAccount } from 'models/account';
 import { addTeamMember, getTeam, getTeamRoles } from 'models/team';
+import { isPlatformAdminUser, isPlatformAdminRecord } from '@/lib/platform/identity';
+import { caches } from '@/lib/request-cache';
+import { cachedPrismaAdapter } from '@/lib/auth-adapter';
 import { createUser, getUser } from 'models/user';
 import { verifyPassword } from '@/lib/auth';
 import { isEmailAllowed } from '@/lib/email/utils';
@@ -35,7 +37,8 @@ import { slackNotify } from './slack';
 import { maxLengthPolicies } from '@/lib/common';
 import { forceConsume } from '@/lib/server-common';
 
-const adapter = PrismaAdapter(prisma);
+// Session lookups are cached briefly in-process (see lib/auth-adapter.ts).
+const adapter = cachedPrismaAdapter;
 const providers: Provider[] = [];
 const sessionMaxAge = 14 * 24 * 60 * 60; // 14 days
 const useSecureCookie = env.appUrl.startsWith('https://');
@@ -293,6 +296,9 @@ export const getAuthOptions = (
         }
 
         const existingUser = await getUser({ email: user.email });
+        if ((existingUser as { suspendedAt?: Date | null } | null)?.suspendedAt) {
+          return '/auth/login?error=account-suspended';
+        }
         const isIdpLogin = account.provider === 'boxyhq-idp';
 
         // Handle credentials provider
@@ -373,12 +379,25 @@ export const getAuthOptions = (
         }
 
         // Populate roles from DB so client-side useSession() has them
+        // Both lookups run in parallel and are cached briefly per user; with database
+        // sessions the adapter already returned the full user row, so the admin flag
+        // needs no extra query.
         if (session?.user?.id) {
-          try {
-            session.user.roles = await getTeamRoles(session.user.id);
-          } catch {
-            session.user.roles = [];
-          }
+          const userId = session.user.id;
+          const fullUser = user as
+            | { isPlatformAdmin?: boolean; email?: string | null; suspendedAt?: Date | null }
+            | undefined;
+          const [roles, isAdmin] = await Promise.all([
+            caches.roles
+              .getOrLoad(userId, () => getTeamRoles(userId))
+              .catch(() => []),
+            (fullUser && 'isPlatformAdmin' in fullUser
+              ? Promise.resolve(isPlatformAdminRecord(fullUser))
+              : isPlatformAdminUser(userId)
+            ).catch(() => false),
+          ]);
+          session.user.roles = roles as typeof session.user.roles;
+          session.user.isPlatformAdmin = isAdmin;
         }
 
         return session;

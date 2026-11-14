@@ -489,8 +489,10 @@ import Image from 'next/image';
 import {
   LayoutDashboard, MessageCircleMore, UsersRound, FileText,
   SquareKanban, HardDrive, CalendarCheck2, Video, Bot,
-  ListTodo, Music, Disc, Settings, Calendar, Handshake,
+  ListTodo, Music, Disc, Settings, Calendar, Handshake, Building2, ShieldCheck,
 } from 'lucide-react';
+import usePlatformAccess from 'hooks/usePlatformAccess';
+import { moduleForHref } from '@/lib/platform/modules';
 import { useTeamStore } from 'store/teamStore';
 import { useTeamSlug } from 'hooks/useTeamSlug';
 import useTeams from 'hooks/useTeams';
@@ -532,7 +534,8 @@ export default function Mainsidebar() {
     },
     {
       label: 'Chat',
-      href: '/chat',
+      // Go straight to the team chat; /chat only redirects there (an extra server round trip).
+      href: teamSlug ? `/team/${teamSlug}/chat` : '/chat',
       icon: <MessageCircleMore className="text-neutral-700 dark:text-white/70 size-[1.12rem] flex-shrink-0" />,
     },
     {
@@ -602,11 +605,30 @@ export default function Mainsidebar() {
       icon: <ListTodo className="text-neutral-700 dark:text-white/70 size-[1.12rem] flex-shrink-0" />,
     },
     {
+      label: 'Workspace',
+      href: '/workspace',
+      icon: <Building2 className="text-neutral-700 dark:text-white/70 size-[1.12rem] flex-shrink-0" />,
+    },
+    {
       label: 'Settings',
       href: '/settings/page',
       icon: <Settings className="text-neutral-700 dark:text-white/70 size-[1.12rem] flex-shrink-0" />,
     },
   ];
+
+  // Hide modules switched off for this workspace (by plan, workspace override or platform admin).
+  const { access, isEnabled } = usePlatformAccess();
+  const visibleLinks = links.filter((link) => {
+    if (link.label === 'AI') return isEnabled('ai');
+    return isEnabled(moduleForHref(link.href));
+  });
+  if (access?.isPlatformAdmin) {
+    visibleLinks.push({
+      label: 'Admin',
+      href: '/admin',
+      icon: <ShieldCheck className="text-neutral-700 dark:text-white/70 size-[1.12rem] flex-shrink-0" />,
+    });
+  }
 
   const [open, setOpen] = useState(false);
 
@@ -617,7 +639,7 @@ export default function Mainsidebar() {
           <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden thin-scrollbar">
             {open ? <Logo /> : <LogoIcon />}
             <div className="mt-4 flex flex-col gap-2">
-              {links.map((link, idx) => (
+              {visibleLinks.map((link, idx) => (
                 <SidebarLink key={`${idx}-${link.label}`} link={link} />
               ))}
             </div>

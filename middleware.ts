@@ -1,134 +1,139 @@
-import micromatch from 'micromatch';
+// Module access gate.
+//
+// Runs only on module routes (see `config.matcher`). It asks /api/platform/access which
+// modules the signed-in user may use in the current workspace and blocks the rest:
+// pages redirect to /module-unavailable, APIs get a 403 JSON error. Platform admins pass
+// everything. Results are cached per session + team for 30s.
+//
+// Note: the previous middleware (session-cookie redirect, mobile redirect, CSP) never ran
+// because its matcher contained an empty alternative that matched no path. It is kept in
+// git history; switching it on would change login/mobile behaviour app-wide.
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
-import env from './lib/env';
+import { matchPath, MODULE_BY_KEY, MODULE_COOKIE, type ModuleKey } from './lib/platform/modules';
 
-const SECURITY_HEADERS = {
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Permissions-Policy': 'geolocation=(), microphone=()',
-  'Cross-Origin-Embedder-Policy': 'require-corp',
-  'Cross-Origin-Opener-Policy': 'same-origin',
-  'Cross-Origin-Resource-Policy': 'same-site',
-} as const;
+type Access = { signedIn: boolean; isPlatformAdmin?: boolean; modules?: Record<ModuleKey, boolean> };
 
-const generateCSP = (): string => {
-  const policies = {
-    'default-src': ["'self'"],
-    'img-src': ["'self'", 'data:'],
-    'script-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'", '*.gstatic.com', '*.google.com'],
-    'style-src': ["'self'", "'unsafe-inline'"],
-    'connect-src': ["'self'", '*.google.com', '*.gstatic.com', '*.ingest.sentry.io', '*.mixpanel.com'],
-    'frame-src': ["'self'", '*.google.com', '*.gstatic.com'],
-    'font-src': ["'self'"],
-    'object-src': ["'none'"],
-    'base-uri': ["'self'"],
-    'form-action': ["'self'"],
-    'frame-ancestors': ["'none'"],
-  };
-  return Object.entries(policies)
-    .map(([key, values]) => `${key} ${values.join(' ')}`)
-    .concat(['upgrade-insecure-requests'])
-    .join('; ');
-};
+const TTL_MS = 30_000;
+const cache = new Map<string, { at: number; data: Access }>();
 
-// Routes that don't need the middleware session check.
-// Note: ALL /api/** routes are excluded here because each API handler
-// calls getServerSession() itself. Doing a second session fetch in
-// middleware (which would be a recursive fetch through middleware again)
-// is what caused the 404 / deadlock bug on timer routes.
-const skipAuthRoutes = [
-  // All API routes — auth is handled inside each handler via getServerSession()
-  '/api/**',
+const SESSION_COOKIES = ['__Secure-next-auth.session-token', 'next-auth.session-token'];
 
-  // Public page routes
-  '/auth/**',
-  '/invitations/*',
-  '/terms-condition',
-  '/unlock-account',
-  '/login/saml',
-  '/.well-known/*',
-  '/meeting/*',
-];
+async function getAccess(req: NextRequest, slug: string | null): Promise<Access | null> {
+  const token = SESSION_COOKIES.map((n) => req.cookies.get(n)?.value).find(Boolean);
+  if (!token) return { signedIn: false };
 
-export default async function Middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+  const key = `${token}|${slug ?? ''}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
 
-  // Skip auth check for API routes and public pages
-  if (micromatch.isMatch(pathname, skipAuthRoutes)) {
-    // Still apply CSP / security headers to API responses if configured
-    if (pathname.startsWith('/api/')) {
-      const response = NextResponse.next();
-      if (env.securityHeadersEnabled) {
-        const csp = generateCSP();
-        response.headers.set('Content-Security-Policy', csp);
-        Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
-          response.headers.set(key, value);
-        });
-      }
-      return response;
-    }
-    return NextResponse.next();
+  const url = new URL('/api/platform/access', req.nextUrl.origin);
+  if (slug) url.searchParams.set('teamSlug', slug);
+  try {
+    const r = await fetch(url, { headers: { cookie: req.headers.get('cookie') ?? '' }, cache: 'no-store' });
+    if (!r.ok) return null;
+    const data = (await r.json()) as Access;
+    if (cache.size > 5000) cache.clear();
+    cache.set(key, { at: Date.now(), data });
+    return data;
+  } catch {
+    return null;
   }
-
-  // ── Page route auth check ────────────────────────────────────────────────
-  // For page routes we must verify the session. We do this by checking
-  // whether the next-auth session cookie exists. If it's missing the user
-  // is definitely not logged in — redirect immediately without a DB call.
-  // If it exists, we let the page load; the page/layout can do a proper
-  // server-side session check with getServerSession() if it needs user data.
-  //
-  // Why not call /api/auth/session here?
-  //   That fetch goes back through this middleware → recursive loop → 404s.
-  //
-  // Why not use getToken()?
-  //   This app uses database sessions (not JWT), so there is no JWT to decode.
-  //
-  // The cookie name used by NextAuth database strategy:
-  //   Production:   __Secure-next-auth.session-token
-  //   Development:  next-auth.session-token
-  const sessionCookieName =
-    process.env.NODE_ENV === 'production'
-      ? '__Secure-next-auth.session-token'
-      : 'next-auth.session-token';
-
-  const sessionCookie = req.cookies.get(sessionCookieName);
-
-  if (!sessionCookie?.value) {
-    const redirectUrl = new URL('/auth/login', req.url);
-    redirectUrl.searchParams.set('callbackUrl', encodeURI(req.url));
-    return NextResponse.redirect(redirectUrl);
-  }
-
-  // Cookie present — let the request through.
-  // The actual session validity (expiry, DB lookup) is verified by
-  // getServerSession() inside the page's getServerSideProps / server component.
-  const ua = req.headers.get('user-agent') || '';
-  const isMobile = /Android|iPhone|iPad|iPod|Opera Mini|IEMobile|WPDesktop/i.test(ua);
-  if (isMobile && !pathname.startsWith('/mobile-development')) {
-    const url = req.nextUrl.clone();
-    url.pathname = '/mobile-development';
-    return NextResponse.redirect(url);
-  }
-
-  const requestHeaders = new Headers(req.headers);
-  const csp = generateCSP();
-  requestHeaders.set('Content-Security-Policy', csp);
-
-  const response = NextResponse.next({ request: { headers: requestHeaders } });
-
-  if (env.securityHeadersEnabled) {
-    response.headers.set('Content-Security-Policy', csp);
-    Object.entries(SECURITY_HEADERS).forEach(([key, value]) => {
-      response.headers.set(key, value);
-    });
-  }
-
-  return response;
 }
 
+export default async function Middleware(req: NextRequest) {
+  const { pathname, searchParams } = req.nextUrl;
+  const match = matchPath(pathname);
+  if (!match) return NextResponse.next();
+
+  const slug =
+    match.slug ||
+    searchParams.get('teamSlug') ||
+    searchParams.get('slug') ||
+    (req.cookies.get(MODULE_COOKIE)?.value ? decodeURIComponent(req.cookies.get(MODULE_COOKIE)!.value) : null);
+
+  const access = await getAccess(req, slug);
+  // Fail open if access can't be resolved: route handlers still do their own auth.
+  if (!access || !access.signedIn || access.isPlatformAdmin) return NextResponse.next();
+  if (access.modules?.[match.module] !== false) return NextResponse.next();
+
+  const label = MODULE_BY_KEY[match.module].label;
+  if (match.isApi) {
+    return NextResponse.json(
+      {
+        error: {
+          message: `${label} is not available in this workspace. Ask your workspace admin to upgrade the plan or enable it.`,
+          code: 'MODULE_DISABLED',
+          module: match.module,
+        },
+      },
+      { status: 403 }
+    );
+  }
+  const url = req.nextUrl.clone();
+  url.pathname = '/module-unavailable';
+  url.search = '';
+  url.searchParams.set('module', match.module);
+  url.searchParams.set('from', pathname);
+  return NextResponse.redirect(url);
+}
+
+// Keep in sync with MODULES in lib/platform/modules.ts (Next needs static matchers).
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|).*)'],
+  matcher: [
+    '/mail/:path*',
+    '/api/integrations/google/gmail/:path*',
+    '/meetings/:path*',
+    '/scheduled/:path*',
+    '/chat/:path*',
+    '/conversations/:path*',
+    '/team/:slug/chat/:path*',
+    '/team/:slug/channels/:path*',
+    '/team/:slug/conversations/:path*',
+    '/api/channels/:path*',
+    '/api/messages/:path*',
+    '/api/direct-messages/:path*',
+    '/api/servers/:path*',
+    '/api/chat/:path*',
+    '/api/teams/:slug/conversations/:path*',
+    '/api/teams/:slug/messages/:path*',
+    '/scrumboard/:path*',
+    '/board/:path*',
+    '/task/:path*',
+    '/api/boards/:path*',
+    '/api/columns/:path*',
+    '/api/subtasks/:path*',
+    '/api/labels/:path*',
+    '/crm/:path*',
+    '/api/teams/:slug/crm/:path*',
+    '/docs/:path*',
+    '/team/:slug/docs/:path*',
+    '/api/docSearch/:path*',
+    '/notes/:path*',
+    '/api/notes/:path*',
+    '/teams/:slug/workload/:path*',
+    '/workload/:path*',
+    '/api/teams/:slug/workload/:path*',
+    '/time-tracking/:path*',
+    '/api/time-tracking/:path*',
+    '/api/time/:path*',
+    '/drive/:path*',
+    '/files/:path*',
+    '/team/:slug/drive/:path*',
+    '/api/drive/:path*',
+    '/api/files/:path*',
+    '/events/:path*',
+    '/calendar/:path*',
+    '/clips/:path*',
+    '/team/:slug/whiteboard/:path*',
+    '/calls/:path*',
+    '/api/calls/:path*',
+    '/api/ai/:path*',
+    '/api/agents/:path*',
+    '/api/voice/:path*',
+  ],
 };
+
 
 // import micromatch from 'micromatch';
 // import { NextResponse } from 'next/server';

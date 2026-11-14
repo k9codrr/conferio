@@ -8,6 +8,7 @@ declare module 'next-auth' {
       id: string;
       username: string; // Add this
       roles: { teamId: string; role: Role; team: { name: string; slug: string } }[];
+      isPlatformAdmin?: boolean;
     } & DefaultSession['user'];
   }
 
