@@ -1,5 +1,6 @@
 'use client'
 
+import CustomFieldsPanel from '@/components/custom-fields/CustomFieldsPanel'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -380,6 +381,11 @@ export default function NoteEditor({ note, onUpdate, onClose }: NoteEditorProps)
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+      </div>
+
+      {/* Custom fields (team-defined, e.g. Status, Client, Due) */}
+      <div className="border-b px-4 py-2">
+        <CustomFieldsPanel entity="note" recordId={note.id} />
       </div>
 
       {/* Toolbar */}

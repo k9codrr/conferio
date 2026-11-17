@@ -47,6 +47,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '../../../lib/auth';
 import { prisma } from '../../../lib/prisma';
+import { broadcastClipEvent, SSE_EVENTS } from '@/lib/sse';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const session = await getServerSession(req, res, authOptions);
@@ -111,6 +112,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           },
         });
 
+        broadcastClipEvent(SSE_EVENTS.TASK_UPDATED, { type: 'task:updated', boardId: attachment.task.boardId, taskId: attachment.taskId });
         return res.status(204).end();
       } catch (error) {
         return res.status(500).json({ error: 'Failed to delete attachment' });

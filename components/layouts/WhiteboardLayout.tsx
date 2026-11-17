@@ -10,7 +10,7 @@ export default function PageLayout({ children }: { children: React.ReactNode }) 
       </div>
       <div className=" flex flex-col relative w-full">
       <div className="relative z-40 w-full">
-        <Header />
+        {/* <Header /> */}
       </div>
       <div className="fixed inset-0">
       {children}

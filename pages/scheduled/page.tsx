@@ -4,6 +4,7 @@ import { useSession } from 'next-auth/react';
 import { redirect, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useLiveInvalidate } from 'hooks/useLiveInvalidate';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -141,6 +142,7 @@ export default function Meetings() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const queryClient = useQueryClient();
+  useLiveInvalidate([['my-meetings']], { sources: ['Meeting', 'MeetingAttendee', 'VideoMeeting'] });
   const [hoveredIndex, setHoveredIndex] = useState<string | null>(null);
   const springConfig = { stiffness: 100, damping: 5 };
   const x = useMotionValue(0);

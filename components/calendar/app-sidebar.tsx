@@ -21,6 +21,7 @@ import {
   SidebarTrigger,
 } from './ui/sidebar';
 import SidebarCalendar from '@/components/calendar/sidebar-calendar';
+import CalendarSourceFilters from '@/components/calendar/source-filters';
 import { Checkbox } from '@/components/ui/checkbox';
 import Image from 'next/image';
 import {
@@ -45,6 +46,7 @@ import { Label } from '@/components/ui/label';
 import { redirect, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useLiveInvalidate } from 'hooks/useLiveInvalidate';
 import { useSession } from 'next-auth/react';
 import { parseISO } from 'date-fns';
 import {
@@ -102,6 +104,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { data: session, status } = useSession();
   const { push } = useRouter();
   const queryClient = useQueryClient();
+  useLiveInvalidate([['meetings'], ['recent-files']], { sources: ['Meeting', 'MeetingAttendee', 'File'] });
   const [filter, setFilter] = useState('UPCOMING');
 
     if (status === 'unauthenticated') {
@@ -274,6 +277,9 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
         <SidebarGroup className="w-full min-w-full p-0">
           <SidebarCalendar />
+        </SidebarGroup>
+        <SidebarGroup className="w-full min-w-full px-0 border-b dark:border-neutral-800 overflow-y-auto max-h-[38vh] thin-scrollbar">
+          <CalendarSourceFilters />
         </SidebarGroup>
 
         <SidebarGroup className="w-full min-w-full px-0">

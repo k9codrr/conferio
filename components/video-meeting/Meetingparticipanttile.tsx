@@ -340,7 +340,7 @@ export default function MeetingParticipantTile({
       if (cameraOn && videoRef.current) { try { (cam.track as any).attach(videoRef.current); } catch { } }
       const mic = pubs.find((p: any) => p.source === Track.Source.Microphone);
       setIsMuted(!mic?.track || mic.isMuted);
-      if (!isLocal && mic?.track && audioRef.current) { try { (mic.track as any).attach(audioRef.current); } catch { } }
+      // Remote audio is played once for the whole room by <RoomAudio/> (works for every layout).
     };
 
     sync();
@@ -353,6 +353,8 @@ export default function MeetingParticipantTile({
 
   return (
     <div
+      onDoubleClick={onSpotlight}
+      title="Double-click to focus"
       className={`relative rounded-2xl overflow-hidden bg-neutral-900 group h-full ${isSpeaking ? 'ring-2 ring-emerald-500' : ''} ${isPinned ? 'ring-2 ring-blue-500' : ''}`}
       style={{ minHeight: compact ? 80 : 120 }}
     >

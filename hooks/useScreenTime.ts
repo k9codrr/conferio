@@ -1,270 +1,90 @@
-// import { useEffect, useRef, useCallback } from 'react';
-// import { useRouter } from 'next/router';
-
-// const HEARTBEAT_INTERVAL = 30000; // 30 seconds
-// const MINIMUM_TRACKING_TIME = 5000; // 5 seconds minimum
-
-// // Routes to NOT track (auth pages, API routes, etc.)
-// const EXCLUDED_ROUTES = [
-//   '/login',
-//   '/register',
-//   '/api',
-//   '/_next',
-//   '/favicon',
-//   '/404',
-//   '/500',
-// ];
-
-// export function useScreenTime() {
-//   const router = useRouter();
-//   const sessionIdRef = useRef<string | null>(null);
-//   const startTimeRef = useRef<number>(0);
-//   const heartbeatRef = useRef<NodeJS.Timeout | null>(null);
-//   const isActiveRef = useRef(true);
-//   const currentRouteRef = useRef<string>('');
-
-//   const shouldTrack = useCallback((pathname: string): boolean => {
-//     return !EXCLUDED_ROUTES.some(excluded => pathname.startsWith(excluded));
-//   }, []);
-
-//   const startTracking = useCallback(async (route: string) => {
-//     if (!shouldTrack(route) || sessionIdRef.current) return;
-
-//     try {
-//       const res = await fetch('/api/screen-time/start', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({ route })
-//       });
-
-//       if (res.ok) {
-//         const data = await res.json();
-//         sessionIdRef.current = data.sessionId;
-//         startTimeRef.current = Date.now();
-//         currentRouteRef.current = route;
-
-//         // Start heartbeat
-//         heartbeatRef.current = setInterval(async () => {
-//           if (sessionIdRef.current && isActiveRef.current) {
-//             await fetch('/api/screen-time/heartbeat', {
-//               method: 'POST',
-//               headers: { 'Content-Type': 'application/json' },
-//               body: JSON.stringify({ sessionId: sessionIdRef.current })
-//             });
-//           }
-//         }, HEARTBEAT_INTERVAL);
-//       }
-//     } catch (error) {
-//       console.error('Failed to start screen time tracking:', error);
-//     }
-//   }, [shouldTrack]);
-
-//   const endTracking = useCallback(async () => {
-//     const sessionId = sessionIdRef.current;
-//     const startTime = startTimeRef.current;
-
-//     if (!sessionId) return;
-
-//     // Clear heartbeat
-//     if (heartbeatRef.current) {
-//       clearInterval(heartbeatRef.current);
-//       heartbeatRef.current = null;
-//     }
-
-//     // Only track if minimum time spent
-//     if (Date.now() - startTime < MINIMUM_TRACKING_TIME) {
-//       sessionIdRef.current = null;
-//       return;
-//     }
-
-//     try {
-//       await fetch('/api/screen-time/end', {
-//         method: 'POST',
-//         headers: { 'Content-Type': 'application/json' },
-//         body: JSON.stringify({ sessionId })
-//       });
-//     } catch (error) {
-//       console.error('Failed to end screen time tracking:', error);
-//     } finally {
-//       sessionIdRef.current = null;
-//       startTimeRef.current = 0;
-//     }
-//   }, []);
-
-//   useEffect(() => {
-//     const route = router.pathname;
-//     if (!route || route === currentRouteRef.current) return;
-
-//     // End previous tracking before starting new
-//     if (sessionIdRef.current) {
-//       endTracking();
-//     }
-
-//     // Start tracking new route
-//     startTracking(route);
-
-//     // Handle visibility change (tab switching)
-//     const handleVisibilityChange = () => {
-//       if (document.hidden) {
-//         isActiveRef.current = false;
-//         endTracking();
-//       } else {
-//         isActiveRef.current = true;
-//         startTracking(router.pathname);
-//       }
-//     };
-
-//     // Handle page unload
-//     const handleBeforeUnload = () => {
-//       if (sessionIdRef.current) {
-//         navigator.sendBeacon('/api/screen-time/end', 
-//           JSON.stringify({ sessionId: sessionIdRef.current })
-//         );
-//       }
-//     };
-
-//     document.addEventListener('visibilitychange', handleVisibilityChange);
-//     window.addEventListener('beforeunload', handleBeforeUnload);
-
-//     return () => {
-//       document.removeEventListener('visibilitychange', handleVisibilityChange);
-//       window.removeEventListener('beforeunload', handleBeforeUnload);
-//       endTracking();
-//     };
-//   }, [router.pathname, startTracking, endTracking]);
-
-//   // Handle route changes
-//   useEffect(() => {
-//     const handleRouteChangeStart = () => {
-//       endTracking();
-//     };
-
-//     router.events.on('routeChangeStart', handleRouteChangeStart);
-
-//     return () => {
-//       router.events.off('routeChangeStart', handleRouteChangeStart);
-//     };
-//   }, [router, endTracking]);
-// }
-
-import { useEffect, useRef, useCallback } from 'react';
+// Page-view / screen-time tracking → RouteViewSession rows.
+// Feeds the admin "Live activity", module page-view stats and team screen-time
+// analytics. One open session per tab; heartbeats every 30 s keep it "online".
+import { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
+import { useSession } from 'next-auth/react';
 
-const MINIMUM_TRACKING_TIME = 5000; // 5 seconds minimum
+const MIN_TRACK_MS = 3000;
+const HEARTBEAT_MS = 30_000;
+const EXCLUDED = ['/auth', '/login', '/register', '/api', '/_next', '/404', '/500', '/public', '/share', '/clipShare', '/invite', '/invitations', '/redirecting'];
 
-const EXCLUDED_ROUTES = [
-  '/login',
-  '/register',
-  '/api',
-  '/_next',
-  '/favicon',
-  '/404',
-  '/500',
-];
+function teamSlugFrom(query: Record<string, any>): string | undefined {
+  const s = query.slug ?? query.teamSlug;
+  return typeof s === 'string' ? s : undefined;
+}
 
 export function useScreenTime() {
   const router = useRouter();
-  const sessionIdRef = useRef<string | null>(null);
-  const startTimeRef = useRef<number>(0);
-  const isActiveRef = useRef(true);
+  const { status } = useSession();
+  const sessionId = useRef<string | null>(null);
+  const startedAt = useRef(0);
+  const beat = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const shouldTrack = useCallback((pathname: string): boolean => {
-    return !EXCLUDED_ROUTES.some(excluded => pathname.startsWith(excluded));
+  const shouldTrack = (path: string) => !EXCLUDED.some((p) => path === p || path.startsWith(p + '/'));
+
+  const end = useCallback((useBeacon = false) => {
+    const id = sessionId.current;
+    if (beat.current) clearInterval(beat.current);
+    beat.current = null;
+    sessionId.current = null;
+    if (!id) return;
+    const short = Date.now() - startedAt.current < MIN_TRACK_MS;
+    const body = JSON.stringify({ sessionId: id, discard: short });
+    if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      navigator.sendBeacon('/api/screen-time/end', new Blob([body], { type: 'application/json' }));
+    } else {
+      fetch('/api/screen-time/end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
+    }
   }, []);
 
-  const startTracking = useCallback(async (route: string) => {
-    if (!shouldTrack(route) || sessionIdRef.current) return;
-
+  const start = useCallback(async () => {
+    if (status !== 'authenticated' || document.hidden) return;
+    const route = router.pathname;
+    if (!route || !shouldTrack(route)) return;
+    end();
+    const startedFor = router.asPath;
     try {
       const res = await fetch('/api/screen-time/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ route })
+        body: JSON.stringify({ route, path: router.asPath.split('?')[0], teamSlug: teamSlugFrom(router.query) }),
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        sessionIdRef.current = data.sessionId;
-        startTimeRef.current = Date.now();
+      if (!res.ok) return;
+      const { sessionId: id } = await res.json();
+      if (router.asPath !== startedFor) {
+        // navigated away while the request was in flight
+        sessionId.current = id;
+        end();
+        return;
       }
-    } catch (error) {
-      // Silently fail — screen time is non-critical
+      sessionId.current = id;
+      startedAt.current = Date.now();
+      beat.current = setInterval(() => {
+        if (!sessionId.current || document.hidden) return;
+        fetch('/api/screen-time/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: sessionId.current }),
+        }).then((r) => { if (r.status === 404) start(); }).catch(() => {});
+      }, HEARTBEAT_MS);
+    } catch {
+      /* tracking is best-effort */
     }
-  }, [shouldTrack]);
-
-  const endTracking = useCallback(async () => {
-    const sessionId = sessionIdRef.current;
-    const startTime = startTimeRef.current;
-
-    if (!sessionId) return;
-
-    // Only track if minimum time spent
-    if (Date.now() - startTime < MINIMUM_TRACKING_TIME) {
-      sessionIdRef.current = null;
-      return;
-    }
-
-    try {
-      await fetch('/api/screen-time/end', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId })
-      });
-    } catch (error) {
-      // Silently fail
-    } finally {
-      sessionIdRef.current = null;
-      startTimeRef.current = 0;
-    }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, router.pathname, router.asPath, end]);
 
   useEffect(() => {
-    const route = router.pathname;
-    if (!route || !shouldTrack(route)) return;
-
-    // Start tracking
-    startTracking(route);
-
-    // Handle visibility change (tab switching)
-    const handleVisibilityChange = () => {
-      if (document.hidden) {
-        isActiveRef.current = false;
-        endTracking();
-      } else {
-        isActiveRef.current = true;
-        startTracking(router.pathname);
-      }
-    };
-
-    // Handle page unload — use sendBeacon for reliability
-    const handleBeforeUnload = () => {
-      if (sessionIdRef.current) {
-        navigator.sendBeacon('/api/screen-time/end', 
-          JSON.stringify({ sessionId: sessionIdRef.current })
-        );
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
+    if (status !== 'authenticated') return;
+    start();
+    const onVisibility = () => (document.hidden ? end() : start());
+    const onUnload = () => end(true);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onUnload);
     return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      endTracking();
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onUnload);
+      end();
     };
-  }, [router.pathname, startTracking, endTracking, shouldTrack]);
-
-  // Handle route changes
-  useEffect(() => {
-    const handleRouteChangeStart = () => {
-      endTracking();
-    };
-
-    router.events.on('routeChangeStart', handleRouteChangeStart);
-
-    return () => {
-      router.events.off('routeChangeStart', handleRouteChangeStart);
-    };
-  }, [router, endTracking]);
+  }, [status, router.pathname, start, end]);
 }

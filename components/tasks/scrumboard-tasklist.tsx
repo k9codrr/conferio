@@ -612,6 +612,7 @@ import {
 } from 'lucide-react';
 
 import { TaskModal } from '@/components/Board/task-modal';
+import { useBoardSSE } from 'hooks/useBoardSSE';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { TaskForm } from "./task-form";
@@ -762,6 +763,8 @@ export function ScrumBoardTaskList() {
   useEffect(() => {
     if (boards?.length && !selectedBoardId) setSelectedBoardId(boards[0].id);
   }, [boards, selectedBoardId]);
+
+  useBoardSSE(selectedBoardId || undefined);
 
   const { data: board, isLoading: boardLoading } = useQuery({
     queryKey: ['board', selectedBoardId],

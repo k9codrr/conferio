@@ -95,6 +95,7 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { filterAccessibleRooms } from "@/lib/whiteboard/access";
 
 function slugify(name: string): string {
   return name
@@ -134,7 +135,7 @@ export default async function handler(
 
   // ─── GET: list rooms ──────────────────────────────────────────────────────
   if (req.method === "GET") {
-    const rooms = await prisma.room.findMany({
+    const allRooms = await prisma.room.findMany({
       where: { teamId: team.id, isArchived: false },
       include: {
         createdBy: { select: { id: true, name: true, image: true } },
@@ -142,6 +143,7 @@ export default async function handler(
       orderBy: { updatedAt: "desc" },
     });
 
+    const rooms = await filterAccessibleRooms(allRooms, session.user.id, membership.role);
     return res.status(200).json({ rooms });
   }
 

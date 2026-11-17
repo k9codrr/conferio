@@ -31,6 +31,8 @@ import { ListIcon } from '@/components/animate-ui/icons/list';
 import { Plus } from "@/components/animate-ui/icons/plus";
 import MeetingCard from '@/components/notetaker/MeetingCard';
 import { MeetingExpandableCard } from "@/components/notetaker/MeetingExpandableCard"
+import NotetakerList, { useNotetakerMeetings } from '@/components/notetaker/NotetakerList';
+import { useRouter as usePagesRouter } from 'next/router';
 import { Header } from '@/components/doc-components/Header';
 import LazyLoader from '@/components/loader/lazyloader';
 import Image from 'next/image';
@@ -58,6 +60,8 @@ export default function Clips({ initialClips }: DashboardProps) {
   const { data: session } = useSession();
   const [clips, setClips] = useState<Clip[]>(initialClips);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const pagesRouter = usePagesRouter();
+  const initialTab = typeof pagesRouter.query.tab === 'string' ? pagesRouter.query.tab : 'all';
 
    useSSE((data) => {
     if (data.type === 'new-clip') {
@@ -87,7 +91,7 @@ export default function Clips({ initialClips }: DashboardProps) {
       <ScrollArea className="flex-1 flex flex-col overflow-x-auto pb-0">
         <div className="flex-1 flex flex-col">
           <Header />
-          <Tabs defaultValue="all">
+          <Tabs key={initialTab} defaultValue={initialTab}>
             <div className="flex !justify-between items-center pb-0 pt-5 px-4">
               <TabsList className="mb-1 h-auto gap-2 rounded-none !bg-transparent px-0 py-1 text-foreground">
                 <TabsTrigger
@@ -418,139 +422,7 @@ export const getServerSideProps: GetServerSideProps = async (context) => {
 };
 
 export function ListNotetaker() {
-  // const { data: session, status } = useSession();
-  const { status } = useSession();
-  const router = useRouter();
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [stats, setStats] = useState({
-    total: 0,
-    completed: 0,
-    recording: 0,
-    totalDuration: 0,
-  });
-
-  if (status === 'unauthenticated') {
-    redirect('/auth/login');
-  }
-
-
-  useEffect(() => {
-    if (status === 'authenticated') {
-      fetchMeetings();
-    }
-  }, [status]);
-
-  const fetchMeetings = async () => {
-    try {
-      const response = await fetch('/api/aimeetings');
-      if (response.ok) {
-        const data = await response.json();
-        setMeetings(data);
-
-        const completed = data.filter((m: Meeting) => m.status === 'completed').length;
-        const recording = data.filter((m: Meeting) => m.status === 'recording').length;
-        const totalDuration = data.reduce((acc: number, m: Meeting) => acc + (m.duration || 0), 0);
-
-        setStats({
-          total: data.length,
-          completed,
-          recording,
-          totalDuration,
-        });
-      }
-    } catch (error) {
-      console.error('Error fetching meetings:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // const formatDuration = (seconds: number) => {
-  //   const hours = Math.floor(seconds / 3600);
-  //   const minutes = Math.floor((seconds % 3600) / 60);
-  //   if (hours > 0) {
-  //     return `${hours}h ${minutes}m`;
-  //   }
-  //   return `${minutes}m`;
-  // };
-
-  if (status === 'loading' || isLoading) {
-    return (
-
-      <div className="flex items-center justify-center h-64">
-        <LazyLoader />
-      </div>
-    );
-  }
-
-  return (
-    <>
-      {/* <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <StatCard
-          title="Total Meetings"
-          value={stats.total}
-          icon={<Calendar1 className="h-5 w-5" />}
-          color="blue"
-        />
-        <StatCard
-          title="Completed"
-          value={stats.completed}
-          icon={<Clock className="h-5 w-5" />}
-          color="green"
-        />
-        <StatCard
-          title="Recording Now"
-          value={stats.recording}
-          icon={<Clock className="h-5 w-5" />}
-          color="red"
-        />
-        <StatCard
-          title="Total Duration"
-          value={formatDuration(stats.totalDuration)}
-          icon={<Clock className="h-5 w-5" />}
-          color="purple"
-        />
-      </div> */}
-
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Your Meetings</h1>
-          <p className="text-gray-600 mt-1">
-            {meetings.length === 0
-              ? 'No meetings yet. Start by joining one!'
-              : `You have ${meetings.length} meeting${meetings.length === 1 ? '' : 's'}`}
-          </p>
-        </div>
-        <NewMeetingModal>
-          <Plus className="h-4 w-4" />
-          <span>Join Meeting</span>
-        </NewMeetingModal>
-      </div>
-
-      {meetings.length === 0 ? (
-        <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
-          <div className="bg-blue-50  size-16  rounded-full flex items-center justify-center mx-auto mb-4">
-            <Calendar1 className="h-8 w-8 text-blue-600" />
-          </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">No meetings yet</h3>
-          <p className="text-gray-600 mb-6 max-w-sm mx-auto">
-            Start by having the AI notetaker join your next meeting
-          </p>
-          <NewMeetingModal>
-            <Plus className="h-4 w-4" />
-            <span>Join Your First Meeting</span>
-          </NewMeetingModal>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {meetings.map((meeting) => (
-            <MeetingCard key={meeting.id} meeting={meeting} />
-          ))}
-        </div>
-      )}
-    </>
-  );
+  return <NotetakerList />;
 }
 
 // function StatCard({
@@ -587,61 +459,7 @@ export function ListNotetaker() {
 
 export function Notetaker() {
   const { status } = useSession();
-  const router = useRouter();
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [stats, setStats] = useState({
-    total: 0,
-    completed: 0,
-    recording: 0,
-    totalDuration: 0,
-  });
-
- 
-    if (status === 'unauthenticated') {
-      redirect('/auth/login');
-    }
-
- useEffect(() =>
-   {
-    if (status === 'authenticated') {
-      fetchMeetings();
-    }
-  }, [status]);
-
-  const fetchMeetings = async () => {
-    try {
-      const response = await fetch('/api/aimeetings');
-      if (response.ok) {
-        const data = await response.json();
-        setMeetings(data);
-
-        const completed = data.filter((m: Meeting) => m.status === 'completed').length;
-        const recording = data.filter((m: Meeting) => m.status === 'recording').length;
-        const totalDuration = data.reduce((acc: number, m: Meeting) => acc + (m.duration || 0), 0);
-
-        setStats({
-          total: data.length,
-          completed,
-          recording,
-          totalDuration,
-        });
-      }
-    } catch (error) {
-      console.error('Error fetching meetings:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // const formatDuration = (seconds: number) => {
-  //   const hours = Math.floor(seconds / 3600);
-  //   const minutes = Math.floor((seconds % 3600) / 60);
-  //   if (hours > 0) {
-  //     return `${hours}h ${minutes}m`;
-  //   }
-  //   return `${minutes}m`;
-  // };
+  const { data: meetings = [], isLoading } = useNotetakerMeetings();
 
   if (status === 'loading' || isLoading) {
     return (

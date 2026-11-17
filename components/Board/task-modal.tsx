@@ -2052,7 +2052,7 @@
 
 "use client"
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   X,
@@ -2116,6 +2116,7 @@ import {
 } from '@/components/ui/select';
 import Image from 'next/image';
 import { Separator } from '../ui/separator';
+import CustomFieldsPanel from '@/components/custom-fields/CustomFieldsPanel';
 import { useId } from "react"
 import { subDays, subMonths, subYears } from "date-fns"
 import { Calendar } from "@/components/ui/calendar"
@@ -2944,42 +2945,73 @@ function ActivityFeed({ task }: { task: any }) {
 
 // ─── TaskModal ────────────────────────────────────────────────────────────────
 
-export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: TaskModalProps) {
+export function TaskModal({ task: taskProp, boardId, boardMembers, labels, closeModal }: TaskModalProps) {
   const queryClient = useQueryClient();
-  useSSE((data) => {
-    if (data.boardId !== boardId) return;
-    const affectedTaskId = data.task?.id || data.taskId;
-    if (affectedTaskId !== task.id) return;
+  const taskId: string = taskProp.id;
+  const taskKey = useMemo(() => ['task', taskId], [taskId]);
 
-    if (data.type === 'task:updated' || data.type === 'task:moved') {
-      queryClient.invalidateQueries({ queryKey: ['task', task.id] });
-      if (data.task) {
-        setEditedTask((prev: any) => ({
-          ...prev,
-          ...data.task,
-          subtasks: data.task.subtasks ?? prev.subtasks,
-          attachments: data.task.attachments ?? prev.attachments,
-          assignees: data.task.assignees ?? prev.assignees,
-          labels: data.task.labels ?? prev.labels,
-        }));
-      }
-    }
-  });
-
+  // ── Live data ──────────────────────────────────────────────────────────────
+  // The full task (comments, activity, drive attachments) comes from
+  // /api/tasks/:id; realtime events and every mutation below refresh it, so the
+  // modal always renders current data — no need to close/reopen.
   const { data: freshTask } = useQuery({
-    queryKey: ['task', task.id],
+    queryKey: taskKey,
     queryFn: async () => {
-      const res = await fetch(`/api/tasks/${task.id}`);
+      const res = await fetch(`/api/tasks/${taskId}`);
       if (!res.ok) throw new Error('Failed to fetch task');
       return res.json();
     },
-    enabled: !!task.id,
+    enabled: !!taskId,
     staleTime: 0,
-    refetchInterval: false,
+    refetchOnWindowFocus: true,
   });
 
+  const task = useMemo(() => {
+    const base = freshTask && !freshTask.__deleted ? { ...taskProp, ...freshTask } : taskProp;
+    return {
+      ...base,
+      subtasks: base.subtasks ?? [],
+      attachments: base.attachments ?? [],
+      assignees: base.assignees ?? [],
+      labels: base.labels ?? [],
+      activities: base.activities ?? [],
+      boardComments: base.boardComments ?? [],
+    };
+  }, [freshTask, taskProp]);
+
+  // Refetch this task (and the board behind it) whenever anyone changes it.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      queryClient.invalidateQueries({ queryKey: taskKey });
+      queryClient.invalidateQueries({ queryKey: ['board', boardId] });
+    }, 120);
+  }, [queryClient, taskKey, boardId]);
+  useEffect(() => () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); }, []);
+
+  useSSE((data) => {
+    if (data.type === 'sse:reconnected') return refresh();
+    const affected = data.task?.id || data.taskId;
+    if (affected !== taskId) return;
+    if (data.type === 'task:deleted') {
+      closeModal();
+      return;
+    }
+    if (data.task) queryClient.setQueryData(taskKey, (old: any) => (old ? { ...old, ...data.task } : old));
+    refresh();
+  });
+
+  /** Optimistically patch the open task, then reconcile with the server. */
+  const patchTask = useCallback((fn: (t: any) => any) => {
+    queryClient.setQueryData(taskKey, (old: any) => fn(old ?? task));
+  }, [queryClient, taskKey, task]);
+
   const [isEditing, setIsEditing] = useState(false);
-  const [editedTask, setEditedTask] = useState(task);
+  const [editedTask, setEditedTask] = useState(taskProp);
+  // True while the user has unsaved title/description edits — live updates
+  // must not overwrite what they're typing.
+  const textDirty = useRef(false);
   const [newSubtask, setNewSubtask] = useState('');
   const id = useId();
   const [iscollapsibleOpen, setIscollapsibleOpen] = useState(false);
@@ -2993,15 +3025,13 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
   const [month, setMonth] = useState<Date>(date ?? today);
   const [open, setOpen] = useState(false);
 
-
   const [attachModalOpen, setAttachModalOpen] = useState(false);
 
-
   useEffect(() => {
-    if (freshTask) {
-      setEditedTask(freshTask);
-    }
-  }, [freshTask]);
+    setEditedTask((prev: any) =>
+      textDirty.current ? { ...task, title: prev.title, description: prev.description } : task
+    );
+  }, [task]);
 
   useEffect(() => {
     if (editedTask.dueDate) {
@@ -3012,56 +3042,76 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       setDate(undefined);
       setMonth(today);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editedTask.dueDate]);
+
+  // ── Mutations ──────────────────────────────────────────────────────────────
+
+  const putTask = async (updates: any) => {
+    const res = await fetch(`/api/tasks/${taskId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) throw new Error('Failed to update task');
+    return res.json();
+  };
+
+  const updateTaskMutation = useMutation({
+    mutationFn: (updates: any) => putTask({ title: updates.title, description: updates.description }),
+    onMutate: (updates: any) => {
+      patchTask(t => ({ ...t, title: updates.title, description: updates.description }));
+    },
+    onSuccess: () => {
+      textDirty.current = false;
+      setIsEditing(false);
+    },
+    onSettled: refresh,
+  });
+
+  // Persist title/description when the field loses focus (no extra click needed).
+  const saveTextIfChanged = () => {
+    if (!textDirty.current) return;
+    if ((editedTask.title ?? '') === (task.title ?? '') && (editedTask.description ?? '') === (task.description ?? '')) {
+      textDirty.current = false;
+      return;
+    }
+    updateTaskMutation.mutate({ title: editedTask.title, description: editedTask.description });
+  };
+
+  const dueDateMutation = useMutation({
+    mutationFn: (dueDate: string | null) => putTask({ dueDate }),
+    onMutate: (dueDate) => patchTask(t => ({ ...t, dueDate })),
+    onSettled: refresh,
+  });
 
   const handleSelect = (newDate: Date | undefined) => {
     if (!newDate) return;
+    const value = format(newDate, "yyyy-MM-dd");
     setDate(newDate);
-    setEditedTask((prev: any) => ({ ...prev, dueDate: format(newDate, "yyyy-MM-dd") }));
+    setEditedTask((prev: any) => ({ ...prev, dueDate: value }));
+    dueDateMutation.mutate(value);
     setOpen(false);
   };
 
   const handlePreset = (presetDate: Date) => {
+    const value = format(presetDate, "yyyy-MM-dd");
     setDate(presetDate);
     setMonth(presetDate);
-    setEditedTask((prev: any) => ({ ...prev, dueDate: format(presetDate, "yyyy-MM-dd") }));
+    setEditedTask((prev: any) => ({ ...prev, dueDate: value }));
+    dueDateMutation.mutate(value);
     setOpen(false);
   };
 
-  // ── Mutations ──────────────────────────────────────────────────────────────
-
-  const updateTaskMutation = useMutation({
-    mutationFn: async (updates: any) => {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      if (!res.ok) throw new Error('Failed to update task');
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['board', boardId] });
-      setIsEditing(true);
-    },
-  });
-
   const updateStatusMutation = useMutation({
-    mutationFn: async (status: string) => {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status }),
-      });
-      if (!res.ok) throw new Error('Failed to update status');
-      return res.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    mutationFn: (status: string) => putTask({ status }),
+    onMutate: (status) => patchTask(t => ({ ...t, status })),
+    onSettled: refresh,
   });
 
   const setCoverImageMutation = useMutation({
     mutationFn: async (coverImage: string | null) => {
-      const res = await fetch(`/api/tasks/${task.id}/cover`, {
+      const res = await fetch(`/api/tasks/${taskId}/cover`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ coverImage }),
@@ -3069,7 +3119,8 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to set cover image');
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    onMutate: (coverImage) => patchTask(t => ({ ...t, coverImage })),
+    onSettled: refresh,
   });
 
   const deleteAttachmentMutation = useMutation({
@@ -3078,25 +3129,20 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to delete attachment');
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    onMutate: (attachmentId) =>
+      patchTask(t => ({ ...t, attachments: (t.attachments ?? []).filter((a: any) => a.id !== attachmentId) })),
+    onSettled: refresh,
   });
 
   const updatePriorityMutation = useMutation({
-    mutationFn: async (priority: string) => {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ priority }),
-      });
-      if (!res.ok) throw new Error('Failed to update priority');
-      return res.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    mutationFn: (priority: string) => putTask({ priority }),
+    onMutate: (priority) => patchTask(t => ({ ...t, priority })),
+    onSettled: refresh,
   });
 
   const createSubtaskMutation = useMutation({
     mutationFn: async (title: string) => {
-      const res = await fetch(`/api/tasks/${task.id}/subtasks`, {
+      const res = await fetch(`/api/tasks/${taskId}/subtasks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title }),
@@ -3104,10 +3150,14 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to add subtask');
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['board', boardId] });
+    onMutate: (title) => {
       setNewSubtask('');
+      patchTask(t => ({
+        ...t,
+        subtasks: [...(t.subtasks ?? []), { id: `tmp-${Date.now()}`, title, isCompleted: false }],
+      }));
     },
+    onSettled: refresh,
   });
 
   const toggleSubtaskMutation = useMutation({
@@ -3120,14 +3170,19 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to update subtask');
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    onMutate: ({ subtaskId, isCompleted }) =>
+      patchTask(t => ({
+        ...t,
+        subtasks: (t.subtasks ?? []).map((s: any) => (s.id === subtaskId ? { ...s, isCompleted } : s)),
+      })),
+    onSettled: refresh,
   });
 
   const assignUserMutation = useMutation({
     mutationFn: async (userId: string) => {
       const isAssigned = task.assignees.some((a: any) => a.user.id === userId);
       const res = await fetch(
-        `/api/tasks/${task.id}/assignees${isAssigned ? `?userId=${userId}` : ''}`,
+        `/api/tasks/${taskId}/assignees${isAssigned ? `?userId=${userId}` : ''}`,
         {
           method: isAssigned ? 'DELETE' : 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3137,14 +3192,27 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to update assignees');
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    onMutate: (userId) => {
+      const member = boardMembers.find((m: any) => m.user?.id === userId);
+      patchTask(t => {
+        const list = t.assignees ?? [];
+        const has = list.some((a: any) => a.user.id === userId);
+        return {
+          ...t,
+          assignees: has
+            ? list.filter((a: any) => a.user.id !== userId)
+            : member ? [...list, { userId, user: member.user }] : list,
+        };
+      });
+    },
+    onSettled: refresh,
   });
 
   const addLabelMutation = useMutation({
     mutationFn: async (labelId: string) => {
       const hasLabel = task.labels.some((l: any) => l.label.id === labelId);
       const res = await fetch(
-        `/api/tasks/${task.id}/labels${hasLabel ? `?labelId=${labelId}` : ''}`,
+        `/api/tasks/${taskId}/labels${hasLabel ? `?labelId=${labelId}` : ''}`,
         {
           method: hasLabel ? 'DELETE' : 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3154,7 +3222,18 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
       if (!res.ok) throw new Error('Failed to update labels');
       return res.json();
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['board', boardId] }),
+    onMutate: (labelId) => {
+      const label = labels.find((l: any) => l.id === labelId);
+      patchTask(t => {
+        const list = t.labels ?? [];
+        const has = list.some((l: any) => l.label.id === labelId);
+        return {
+          ...t,
+          labels: has ? list.filter((l: any) => l.label.id !== labelId) : label ? [...list, { labelId, label }] : list,
+        };
+      });
+    },
+    onSettled: refresh,
   });
 
   const OpenCollapsible = () => {
@@ -3256,7 +3335,9 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
                         <Input
                           type="text"
                           value={editedTask.title}
-                          onChange={e => setEditedTask({ ...editedTask, title: e.target.value })}
+                          onChange={e => { textDirty.current = true; setEditedTask({ ...editedTask, title: e.target.value }); }}
+                          onBlur={saveTextIfChanged}
+                          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                           className="!text-3xl border-none px-[1px] font-semibold dark:text-white/80 dark:hover:bg-white/[0.04] placeholder:text-gray-300 dark:placeholder:text-gray-600"
                         />
 
@@ -3307,12 +3388,16 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
                           />
                         </div>
 
+                        {/* Custom fields (ClickUp-style, defined per team) */}
+                        <CustomFieldsPanel entity="task" recordId={task.id} className="pt-1" />
+
                         {/* Description */}
                         <div className="mt-2">
                           <Separator className="h-[0.5px] dark:bg-white/[0.06]" />
                           <Textarea
                             value={editedTask.description || ''}
-                            onChange={e => setEditedTask({ ...editedTask, description: e.target.value })}
+                            onChange={e => { textDirty.current = true; setEditedTask({ ...editedTask, description: e.target.value }); }}
+                            onBlur={saveTextIfChanged}
                             className="w-full placeholder:text-gray-400 dark:placeholder:text-gray-600 p-3 border-none dark:hover:bg-white/[0.04] outline-none rounded-lg min-h-[100px] text-sm dark:text-gray-200"
                             placeholder="Write, press 'Space' for AI, '/' for commands"
                           />
@@ -3336,7 +3421,7 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
                         <AttachmentsAccordion
                           task={task}
                           boardId={boardId}
-                          onUploadComplete={() => queryClient.invalidateQueries({ queryKey: ['board', boardId] })}
+                          onUploadComplete={refresh}
                           onSetCover={(url) => setCoverImageMutation.mutate(url)}
                           onDeleteAttachment={(id) => deleteAttachmentMutation.mutate(id)}
                           onAttachExisting={() => setAttachModalOpen(true)}
@@ -3367,12 +3452,12 @@ export function TaskModal({ task, boardId, boardMembers, labels, closeModal }: T
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ content, attachments }),
-                          }).then(() => queryClient.invalidateQueries({ queryKey: ['board', boardId] }));
+                          }).then(refresh);
                         }}
                         onDeleteComment={commentId => {
                           if (confirm('Delete this comment?')) {
                             fetch(`/api/comments/${commentId}`, { method: 'DELETE' })
-                              .then(() => queryClient.invalidateQueries({ queryKey: ['board', boardId] }));
+                              .then(refresh);
                           }
                         }}
                       />

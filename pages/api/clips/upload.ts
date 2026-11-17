@@ -246,7 +246,7 @@ const parseForm = (req: NextApiRequest): Promise<{ fields: any; files: any }> =>
   return new Promise((resolve, reject) => {
     const form = formidable({
       multiples: false,
-      maxFileSize: 25 * 1024 * 1024, // 25MB
+      maxFileSize: 200 * 1024 * 1024, // 200MB (meeting recordings)
     })
 
     form.parse(req, (err, fields, files) => {
@@ -328,6 +328,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     broadcastClipEvent(SSE_EVENTS.NEW_CLIP, {
       type: 'new-clip',
       clip,
+      userIds: [session.user.id],
     })
 
     // Cleanup

@@ -219,6 +219,7 @@
 
 
 // components/notifications/NotificationContext.tsx
+import { playNotificationSound } from "./sounds";
 import React, {
   createContext,
   useContext,
@@ -315,6 +316,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             );
             setUnreadCount((c) => c + 1);
             queueToast(n);
+            // Reminders ring via <ReminderAlarm/>; everything else gets a soft ping.
+            if (n.type !== "REMINDER_DUE") playNotificationSound();
           }
         } catch (e) {
           console.error("[SSE] parse error", e);

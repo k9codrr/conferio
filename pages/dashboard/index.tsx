@@ -67,6 +67,7 @@ import { CategoryForm } from '@/components/categories/category-form';
 import Link from 'next/link';
 import { format, parseISO } from 'date-fns';
 import { ActivityFeedCard } from '@/components/dashboard/ActivityFeedCard';
+import { FocusDashboard, GridDashboard, LayoutSwitcher, useDashboardPrefs } from '@/components/dashboard/custom/CustomDashboards';
 
 
 interface TaskProps {
@@ -96,7 +97,8 @@ interface Reminder {
   priority: string;
 }
 
-const Dashboard = () => {
+// The original dashboard — kept exactly as designed ("Default" layout).
+const DefaultDashboard = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
   const [task, setTask] = useState<UserTask[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -454,6 +456,31 @@ const Dashboard = () => {
             <FamilyButtonDemo />
 
           </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Picks the user's dashboard layout: Default (above, unchanged) or the
+// customizable Grid / Focus layouts.
+const Dashboard = () => {
+  const { layout } = useDashboardPrefs();
+  if (layout === 'default') {
+    return (
+      <>
+        <DefaultDashboard />
+        <LayoutSwitcher className="fixed bottom-4 left-20 z-40" />
+      </>
+    );
+  }
+  return (
+    <div className="flex dark:bg-black w-full h-screen overflow-hidden">
+      <Mainsidebar />
+      <div className="flex-1 flex flex-col h-full overflow-hidden">
+        <Header />
+        <div className="flex-1 min-h-0 bg-gray-50 dark:bg-[#040404]">
+          {layout === 'grid' ? <GridDashboard /> : <FocusDashboard />}
         </div>
       </div>
     </div>

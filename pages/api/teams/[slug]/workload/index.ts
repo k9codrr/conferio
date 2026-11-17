@@ -330,7 +330,7 @@
 //   } catch (_) {}
 
 //   recordMetric("workload.fetched");
-//   res.status(200).json({ data: result });
+//   res.status(200).json({ data: { ...result, viewerRole: user.role } });
 // };
 
 // pages/api/teams/[slug]/workload/index.ts
@@ -366,7 +366,7 @@ const handleGET = async (req: NextApiRequest, res: NextApiResponse) => {
 
   // Try cache
   const cached = await cacheGet<any>(cacheKey);
-  if (cached) return res.status(200).json({ data: cached, cached: true });
+  if (cached) return res.status(200).json({ data: { ...cached, viewerRole: user.role }, cached: true });
 
   const now = new Date();
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -559,5 +559,5 @@ const handleGET = async (req: NextApiRequest, res: NextApiResponse) => {
 
   await cacheSet(cacheKey, result, CACHE_TTL);
   recordMetric("workload.fetched");
-  res.status(200).json({ data: result });
+  res.status(200).json({ data: { ...result, viewerRole: user.role } });
 };

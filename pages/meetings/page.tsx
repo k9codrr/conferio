@@ -12,6 +12,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useLiveInvalidate } from 'hooks/useLiveInvalidate';
 import { useSession } from 'next-auth/react';
 import { redirect, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
@@ -44,6 +45,7 @@ const Meetings = () => {
   const { data: session, status } = useSession();
   const router = useRouter();
   const queryClient = useQueryClient();
+  useLiveInvalidate([['my-meetings'], ['AI Notes']], { sources: ['Meeting', 'MeetingAttendee', 'VideoMeeting', 'AiMeeting'] });
   const [filter] = useState('UPCOMING');
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const springConfig = { stiffness: 100, damping: 5 };

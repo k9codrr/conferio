@@ -34,8 +34,17 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ChevronsUpDown } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import CustomSidebar from '@/components/navigation/CustomSidebar';
+import usePlatformAccess from 'hooks/usePlatformAccess';
+import { moduleForHref } from '@/lib/platform/modules';
+import { useSidebarPrefs } from '@/components/navigation/nav-items';
 
-export default function Mainsidebar() {
+const THIN_LINK_MODULE = {
+  Meetings: 'meetings', Chat: 'chat', Srumboard: 'scrumboard', Docs: 'docs', Workload: 'workload', Timesheet: 'timesheet',
+  Drive: 'drive', Events: 'events', AI: 'ai', Calendar: 'calendar', Clips: 'clips', Whiteboard: 'whiteboard', Scheduled: 'meetings',
+};
+
+function DefaultSidebar() {
     const { teams } = useTeams();
 
   const links = [
@@ -191,6 +200,8 @@ export default function Mainsidebar() {
     
   ];
   const [open, setOpen] = useState(false);
+  // Hide modules switched off for this workspace (same rules as the main sidebar).
+  const { isEnabled } = usePlatformAccess();
   return (
     <div
       className={cn(
@@ -203,9 +214,11 @@ export default function Mainsidebar() {
           <div className="flex flex-col flex-1 overflow-y-auto overflow-x-hidden thin-scrollbar">
             {open ? <Logo /> : <></>}
             <div className="mt-4 flex flex-col gap-2 px-4">
-              {links.map((link, idx) => (
-                <SidebarLink key={`${idx}-${link.label}`} link={link} />
-              ))}
+              {links
+                .filter((link) => link.href !== '/' && isEnabled(THIN_LINK_MODULE[link.label] ?? moduleForHref(link.href)))
+                .map((link, idx) => (
+                  <SidebarLink key={`${idx}-${link.label}`} link={link} />
+                ))}
             </div>
           </div>
           <div className="px-4">
@@ -454,3 +467,11 @@ const TeamDropdownSmall = () => {
     </DropdownMenu>
   );
 };
+
+// Renders the user's chosen sidebar style (Settings → Customize sidebar).
+// "default" keeps the original sidebar above exactly as designed.
+export default function Mainsidebar() {
+  const { sidebar } = useSidebarPrefs();
+  if (sidebar.variant !== 'default') return <CustomSidebar variant={sidebar.variant} />;
+  return <DefaultSidebar />;
+}

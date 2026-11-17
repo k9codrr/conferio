@@ -1811,6 +1811,7 @@ import { Plus, Scroll, CheckSquare, MessageSquare, Paperclip, User, ChevronDown,
 import { format, isValid, parseISO } from 'date-fns';
 // import moment from 'moment';
 import { TaskModal } from '@/components/Board/task-modal';
+import { useBoardSSE } from 'hooks/useBoardSSE';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useSession } from 'next-auth/react';
 import { TaskForm } from "./task-form";
@@ -2024,6 +2025,8 @@ export function DashboardTaskList() {
   }, [boards, selectedBoardId]);
 
   // Fetch selected board with full data
+  useBoardSSE(selectedBoardId || undefined);
+
   const { data: board, isLoading: boardLoading } = useQuery({
     queryKey: ['board', selectedBoardId],
     queryFn: async () => {

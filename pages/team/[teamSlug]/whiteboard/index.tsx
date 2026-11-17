@@ -812,6 +812,7 @@ import { useRouter } from "next/router";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { filterAccessibleRooms } from "@/lib/whiteboard/access";
 import type { Room, Team, User } from "@prisma/client";
 import { Globe, MoreVertical, PlusIcon, Search } from "lucide-react";
 import { Header } from "@/components/doc-components/Header";
@@ -1713,11 +1714,12 @@ export const getServerSideProps: GetServerSideProps = async (ctx) => {
   const membership = team.members[0];
   const canCreate = ["ADMIN", "OWNER", "MANAGER", "MEMBER"].includes(membership.role);
 
-  const rooms = await prisma.room.findMany({
+  const allRooms = await prisma.room.findMany({
     where: { teamId: team.id, isArchived: false },
     include: { createdBy: { select: { id: true, name: true, image: true } } },
     orderBy: { updatedAt: "desc" },
   });
+  const rooms = await filterAccessibleRooms(allRooms, session.user.id, membership.role);
 
   return {
     props: {

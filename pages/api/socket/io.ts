@@ -183,6 +183,7 @@ import { NextApiRequest } from 'next';
 import { Server as ServerIO } from 'socket.io';
 import { NextApiResponseServerIo } from 'types/socket';
 import { setIO } from '@/lib/socket-store';
+import { attachLiveSubtitles } from '@/lib/meeting/live-subtitles';
 
 export const config = {
   api: {
@@ -210,6 +211,9 @@ const ioHandler = (req: NextApiRequest, res: NextApiResponseServerIo) => {
 
     io.on('connection', (socket) => {
       console.log('[SOCKET] Connected:', socket.id);
+
+      // Live meeting subtitles: transcription + per-listener translation.
+      attachLiveSubtitles(io, socket);
 
       // socket.on('join_channel', (channelId: string) => {
       //   socket.join(`channel:${channelId}`);

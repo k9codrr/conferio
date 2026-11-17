@@ -78,7 +78,7 @@
 // components/calendar/event-calendar/calendar-context.tsx
 "use client";
 
-import React, { createContext, useContext, useState, ReactNode, useCallback } from "react";
+import React, { createContext, useContext, useState, ReactNode, useCallback, useEffect } from "react";
 import { etiquettes } from "@/components/calendar/big-calendar";
 
 // Country codes supported by Nager.Date API (includes India)
@@ -98,6 +98,12 @@ interface CalendarContextType {
   isColorVisible: (color: string | undefined) => boolean;
 
   // Public holidays management
+  /** Unified feed sources the user has switched off */
+  hiddenSources: string[];
+  toggleSource: (source: string) => void;
+  setHiddenSources: (sources: string[]) => void;
+  isSourceVisible: (source: string | undefined) => boolean;
+
   showHolidays: boolean;
   setShowHolidays: (show: boolean) => void;
   holidayCountry: CountryCode;
@@ -135,6 +141,39 @@ export function CalendarProvider({ children }: CalendarProviderProps) {
   });
 
   // Public holidays state
+  const [hiddenSources, setHiddenSourcesState] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("calendar:hiddenSources") || "[]");
+      if (Array.isArray(saved)) setHiddenSourcesState(saved);
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  const setHiddenSources = useCallback((next: string[]) => {
+    setHiddenSourcesState(next);
+    try {
+      localStorage.setItem("calendar:hiddenSources", JSON.stringify(next));
+    } catch {
+      /* storage unavailable */
+    }
+  }, []);
+  const toggleSource = useCallback((source: string) => {
+    setHiddenSourcesState((prev) => {
+      const next = prev.includes(source) ? prev.filter((s) => s !== source) : [...prev, source];
+      try {
+        localStorage.setItem("calendar:hiddenSources", JSON.stringify(next));
+      } catch {
+        /* storage unavailable */
+      }
+      return next;
+    });
+  }, []);
+  const isSourceVisible = useCallback(
+    (source: string | undefined) => !source || !hiddenSources.includes(source),
+    [hiddenSources]
+  );
+
   const [showHolidays, setShowHolidays] = useState<boolean>(false);
   const [holidayCountry, setHolidayCountry] = useState<CountryCode>("IN");
   const [holidayYear, setHolidayYear] = useState<number>(new Date().getFullYear());
@@ -162,6 +201,10 @@ export function CalendarProvider({ children }: CalendarProviderProps) {
     visibleColors,
     toggleColorVisibility,
     isColorVisible,
+    hiddenSources,
+    toggleSource,
+    setHiddenSources,
+    isSourceVisible,
     showHolidays,
     setShowHolidays,
     holidayCountry,

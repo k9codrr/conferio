@@ -77,6 +77,7 @@ interface WorkloadData {
   weeklyTrend: Array<{
     week: string; tasksCreated: number; tasksCompleted: number; hours: number;
   }>;
+  viewerRole?: string;
 }
 
 // Schedule types
@@ -210,6 +211,7 @@ export default function WorkloadDashboard({ teamSlug, teamName }: Props) {
     return members;
   }, [data, filterRole, searchQuery, sortBy]);
 
+  const canRebalance = data?.viewerRole === "OWNER" || data?.viewerRole === "ADMIN";
   const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
   const maxScore = useMemo(() => Math.max(...(data?.members.map(m => m.workloadScore) || [1])), [data]);
 
@@ -352,17 +354,19 @@ export default function WorkloadDashboard({ teamSlug, teamName }: Props) {
                     <RefreshCw className="w-3.5 h-3.5" />
                   </Button> */}
 
-                  {/* {balanceSuggestions.length > 0 && (
+                  {canRebalance && (
                     <Button
                       size="sm"
-                      variant="outline"
                       onClick={() => setShowRebalance(true)}
-                      className="h-8 gap-1.5 text-amber-600 border-amber-300 hover:bg-amber-50 dark:text-amber-400 dark:border-amber-800 dark:hover:bg-amber-950"
+                      className="h-8 gap-1.5 bg-violet-600 hover:bg-violet-700 text-white"
                     >
                       <Scale className="w-3.5 h-3.5" />
-                      {balanceSuggestions.length} suggestion{balanceSuggestions.length > 1 ? "s" : ""}
-                    </Button> 
-                  )}*/}
+                      Balance workload
+                      {balanceSuggestions.length > 0 && (
+                        <span className="ml-0.5 rounded-full bg-white/25 px-1.5 text-[10px] font-bold">{balanceSuggestions.length}</span>
+                      )}
+                    </Button>
+                  )}
                 </div>
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -458,7 +462,7 @@ export default function WorkloadDashboard({ teamSlug, teamName }: Props) {
                     suggestions={balanceSuggestions}
                     maxScore={maxScore}
                     avgScore={team.avgWorkloadScore}
-                    onOpenRebalance={() => setShowRebalance(true)}
+                    onOpenRebalance={canRebalance ? () => setShowRebalance(true) : undefined}
                   />
                 )}
               </div>
@@ -474,7 +478,7 @@ export default function WorkloadDashboard({ teamSlug, teamName }: Props) {
             onClose={() => setSelectedMember(null)}
           />
         )}
-        {showRebalance && data && (
+        {showRebalance && data && canRebalance && (
           <RebalanceModal
             teamSlug={teamSlug}
             members={data.members}
@@ -1265,9 +1269,11 @@ function BalanceTab({ members, suggestions, maxScore, avgScore, onOpenRebalance 
                   <p className="text-[11px] text-emerald-600">Available</p>
                 </div>
               </div>
-              <Button size="sm" onClick={onOpenRebalance} className="bg-violet-600 hover:bg-violet-700 text-white shrink-0">
-                Rebalance →
-              </Button>
+              {onOpenRebalance && (
+                <Button size="sm" onClick={onOpenRebalance} className="bg-violet-600 hover:bg-violet-700 text-white shrink-0">
+                  Rebalance →
+                </Button>
+              )}
             </div>
           ))}
         </div>

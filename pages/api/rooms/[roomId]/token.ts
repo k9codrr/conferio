@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { redis } from "@/lib/redis";
 import * as jose from "jose";
+import { getRoomPermissions, resolveAccess } from "@/lib/whiteboard/access";
 
 const JWT_SECRET = new TextEncoder().encode(
   process.env.ROOM_JWT_SECRET || process.env.NEXTAUTH_SECRET!
@@ -62,6 +63,11 @@ export default async function handler(
   if (!membership) {
     return res.status(403).json({ error: "Access denied" });
   }
+  const perms = await getRoomPermissions(room.id);
+  const access = resolveAccess(perms, { userId: session.user.id, role: membership.role, isCreator: room.createdById === session.user.id });
+  if (access === "none") {
+    return res.status(403).json({ error: "You don't have access to this whiteboard" });
+  }
 
   // Create a unique JWT ID for replay-attack prevention
   // const jti = `${room.tldrawRoomId}:${session.user.id}:${Date.now()}`;
@@ -75,6 +81,7 @@ export default async function handler(
     // tldrawRoomId: room.tldrawRoomId,
     teamId: room.teamId,
     role: membership.role,
+    access,
     name: session.user.name ?? "Anonymous",
     color: generateUserColor(session.user.id),
   })
@@ -89,6 +96,7 @@ export default async function handler(
 
   return res.status(200).json({
     token,
+    access,
     // tldrawRoomId: room.tldrawRoomId,
     expiresIn: 300,
   });

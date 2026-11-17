@@ -87,4 +87,8 @@ export function invalidateUser(userId: string) {
 /** Plans, workspace settings or global module switches changed: recompute access for everyone. */
 export function invalidateAccess() {
   caches.access.clear();
+  // Tell every open tab to re-read its module access (sidebar / gates update live).
+  import('@/lib/sse')
+    .then(({ publish }) => publish('platform:access', { at: Date.now() }))
+    .catch(() => {});
 }

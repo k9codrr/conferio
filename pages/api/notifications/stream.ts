@@ -9,32 +9,20 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "lib/auth";
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { publish, subscribeToClipEvent, SSE_EVENTS } from "@/lib/sse";
 
-const prisma = new PrismaClient();
-
-// Map of userId -> response writers (supports multiple tabs)
-const clients = new Map<string, Set<NextApiResponse>>();
-
-/** Broadcast a new notification to all open SSE connections for a user */
+/**
+ * Broadcast a notification to every open stream of a user — in this process
+ * and (via Redis) on other instances. Goes through the shared bus in lib/sse.ts
+ * because a module-level client map here is NOT shared with the API route that
+ * imports this function (each Next.js route is bundled separately).
+ */
 export function broadcastToUser(userId: string, data: object) {
-  const userClients = clients.get(userId);
-  if (!userClients) return;
-
-  const message = `data: ${JSON.stringify(data)}\n\n`;
-  for (const res of userClients) {
-    try {
-      res.write(message);
-    } catch {
-      // Client disconnected — clean up handled in close handler
-    }
-  }
+  publish(SSE_EVENTS.NOTIFICATION, { userIds: [userId], payload: data }).catch(() => {});
 }
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "GET") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -43,69 +31,55 @@ export default async function handler(
   if (!session?.user?.id) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-
   const userId = session.user.id;
 
-  // ── SSE headers ──────────────────────────────────────────────────────────
+  req.socket.setTimeout(0);
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  // ── Register client ──────────────────────────────────────────────────────
-  if (!clients.has(userId)) {
-    clients.set(userId, new Set());
-  }
-  clients.get(userId)!.add(res);
+  let closed = false;
+  const write = (chunk: string) => {
+    if (closed) return;
+    try {
+      res.write(chunk);
+    } catch {
+      /* closed */
+    }
+  };
 
-  // ── Send any unread notifications immediately on connect ─────────────────
+  const unsubscribe = subscribeToClipEvent(SSE_EVENTS.NOTIFICATION, (data: any) => {
+    if (Array.isArray(data?.userIds) && data.userIds.includes(userId)) {
+      write(`data: ${JSON.stringify(data.payload)}\n\n`);
+    }
+  });
+
+  // Unread notifications on connect
   try {
     const unread = await prisma.notification.findMany({
-      where: {
-        userId,
-        read: false,
-        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-      },
+      where: { userId, read: false, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
       orderBy: { createdAt: "desc" },
       take: 20,
     });
-
-    if (unread.length > 0) {
-      res.write(
-        `data: ${JSON.stringify({ type: "initial", notifications: unread })}\n\n`
-      );
-    }
+    if (unread.length > 0) write(`data: ${JSON.stringify({ type: "initial", notifications: unread })}\n\n`);
   } catch (error) {
     console.error("[SSE] Failed to fetch initial notifications:", error);
   }
 
-  // ── Keep-alive ping every 25s ─────────────────────────────────────────────
-  const pingInterval = setInterval(() => {
-    try {
-      res.write(": ping\n\n");
-    } catch {
-      clearInterval(pingInterval);
-    }
-  }, 25_000);
+  const pingInterval = setInterval(() => write(": ping\n\n"), 25_000);
 
-  // ── Cleanup on disconnect ─────────────────────────────────────────────────
   req.on("close", () => {
+    closed = true;
     clearInterval(pingInterval);
-    const userClients = clients.get(userId);
-    if (userClients) {
-      userClients.delete(res);
-      if (userClients.size === 0) {
-        clients.delete(userId);
-      }
-    }
+    unsubscribe();
   });
 }
 
 export const config = {
   api: {
     bodyParser: false,
-    // Increase response time limit for SSE
     externalResolver: true,
   },
 };

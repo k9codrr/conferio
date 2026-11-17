@@ -170,6 +170,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from 'lib/auth'; // adjust path to your authOptions
 import { prisma } from 'utils/db';
+import { publishToUsers, SSE_EVENTS } from '@/lib/sse';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   try {
@@ -208,6 +209,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         },
       });
 
+      publishToUsers([userFound.id], SSE_EVENTS.CALENDAR_CHANGED, { source: 'mytask', id: newTask.id }).catch(() => {});
       return res.status(200).json(newTask);
     }
 
@@ -281,8 +283,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     if (req.method === 'PUT') {
       const data = req.body;
 
-      if (data.itsDone === undefined) {
-        return res.status(400).json({ error: "'itsDone' field is required." });
+      if (data.itsDone === undefined && data.dueTime === undefined) {
+        return res.status(400).json({ error: "'itsDone' or 'dueTime' is required." });
       }
 
       const session = await getServerSession(req, res, authOptions);
@@ -309,9 +311,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       const updatedTask = await prisma.myTask.update({
         where: { id: data.id },
-        data: { itsDone: data.itsDone },
+        data: {
+          ...(data.itsDone !== undefined && { itsDone: !!data.itsDone }),
+          ...(data.dueTime && !isNaN(+new Date(data.dueTime)) && { dueTime: new Date(data.dueTime) }),
+        },
       });
 
+      publishToUsers([userFound.id], SSE_EVENTS.CALENDAR_CHANGED, { source: 'mytask', id: updatedTask.id }).catch(() => {});
       return res.status(200).json(updatedTask);
     }
 

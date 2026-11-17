@@ -511,8 +511,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ChevronsUpDown } from 'lucide-react';
 import { Avatar, AvatarFallback, AvatarImage } from '../ui/avatar';
+import CustomSidebar from '@/components/navigation/CustomSidebar';
+import { useSidebarPrefs } from '@/components/navigation/nav-items';
 
-export default function Mainsidebar() {
+const LINK_MODULE = {
+  Mail: 'mail', Meetings: 'meetings', Chat: 'chat', Scrumboard: 'scrumboard', CRM: 'crm', Docs: 'docs',
+  Workload: 'workload', Timesheet: 'timesheet', Drive: 'drive', Events: 'events', AI: 'ai',
+  Calendar: 'calendar', Clips: 'clips', Whiteboard: 'whiteboard', Scheduled: 'meetings', Notes: 'notes',
+};
+
+function DefaultSidebar() {
   const teamSlug = useTeamSlug();
   const { selectedTeam } = useTeamStore();
 
@@ -616,12 +624,16 @@ export default function Mainsidebar() {
     },
   ];
 
-  // Hide modules switched off for this workspace (by plan, workspace override or platform admin).
+  // Hide modules switched off for this workspace (by plan, workspace override or platform
+  // admin) and links the member's team role can't use. Explicit label → module map so
+  // links whose href has no team slug yet (e.g. Whiteboard) are still gated.
   const { access, isEnabled } = usePlatformAccess();
+  const myRole = access?.teamRole ?? null;
   const visibleLinks = links.filter((link) => {
-    if (link.label === 'AI') return isEnabled('ai');
-    return isEnabled(moduleForHref(link.href));
-  });
+    if (link.roles && myRole && !link.roles.includes(myRole)) return false;
+    const key = LINK_MODULE[link.label] ?? moduleForHref(link.href);
+    return isEnabled(key);
+  }).filter((link) => link.href !== '/' || link.label === 'Dashboard');
   if (access?.isPlatformAdmin) {
     visibleLinks.push({
       label: 'Admin',
@@ -886,3 +898,11 @@ const TeamDropdownSmall = () => {
     </DropdownMenu>
   );
 };
+
+// Renders the user's chosen sidebar style (Settings → Customize sidebar).
+// "default" keeps the original sidebar above exactly as designed.
+export default function Mainsidebar() {
+  const { sidebar } = useSidebarPrefs();
+  if (sidebar.variant !== 'default') return <CustomSidebar variant={sidebar.variant} />;
+  return <DefaultSidebar />;
+}

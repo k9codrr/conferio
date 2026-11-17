@@ -2857,7 +2857,7 @@
 // pages/board/[id].tsx
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
-import { FC, useState, useMemo } from 'react';
+import { FC, useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import {
@@ -2873,6 +2873,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { TaskModal } from '@/components/Board/task-modal';
+import { useBoardSSE } from 'hooks/useBoardSSE';
 import { BoardHeader } from '@/components/Board/board-header';
 import Layout from '@/components/Layout/Layout';
 import BoardInsideHeader from '@/components/Board/header';
@@ -3340,7 +3341,8 @@ export default function BoardPage() {
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [showCoverUpload, setShowCoverUpload] = useState(false);
 
-  // ✅ All real-time socket logic lives here — handles join_board + all task events
+  // Real-time: task/board events for this board patch the React Query cache.
+  useBoardSSE(id);
 
   if (status === 'unauthenticated') {
     redirect('/auth/login');
@@ -3372,6 +3374,17 @@ export default function BoardPage() {
     staleTime: Infinity,
     refetchOnWindowFocus: false,
   });
+
+  // Deep link: /board/:id?task=:taskId opens that task (used by the calendar & notifications).
+  const deepLinkTaskId = typeof router.query.task === 'string' ? router.query.task : undefined;
+  useEffect(() => {
+    if (!deepLinkTaskId || !board) return;
+    const t = board.columns.flatMap((c) => c.tasks).find((x) => x.id === deepLinkTaskId);
+    if (t) {
+      setSelectedTask(t);
+      setIsTaskModalOpen(true);
+    }
+  }, [deepLinkTaskId, board]);
 
   const { percentage } = useMemo(() => {
     if (!board?.columns || board.columns.length === 0) {
@@ -3604,11 +3617,21 @@ export default function BoardPage() {
 
                 {isTaskModalOpen && selectedTask && (
                   <TaskModal
-                    task={selectedTask}
+                    key={selectedTask.id}
+                    task={
+                      board.columns.flatMap((c: any) => c.tasks).find((t: any) => t.id === selectedTask.id) ?? selectedTask
+                    }
                     boardId={board.id}
                     boardMembers={board.members}
                     labels={board.labels}
-                    closeModal={() => { setIsTaskModalOpen(false); setSelectedTask(null); }}
+                    closeModal={() => {
+                      setIsTaskModalOpen(false);
+                      setSelectedTask(null);
+                      if (deepLinkTaskId) {
+                        const { task: _t, ...rest } = router.query;
+                        router.replace({ pathname: router.pathname, query: rest }, undefined, { shallow: true });
+                      }
+                    }}
                   />
                 )}
 

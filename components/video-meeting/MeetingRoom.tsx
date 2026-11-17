@@ -1056,6 +1056,10 @@ import ParticipantsPanel from './Participantspanel';
 import ReactionOverlay from './Reactionoverlay';
 import SubtitlesPanel from './Subtitlespanel';
 import { useAudioCapture } from 'hooks/useAudioCapture';
+import CampfireRoom, { ViewMenu, type MeetingView } from './CampfireView';
+import RoomAudio from './RoomAudio';
+import { useMeetingRecorder } from 'hooks/useMeetingRecorder';
+import { readLocalPrefs, usePreferences } from 'hooks/usePreferences';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -1139,12 +1143,34 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
   const [showReactions, setShowReactions] = useState(false);
   const [showOverflowCarousel, setShowOverflowCarousel] = useState(false);
 
-  const [layout, setLayout] = useState<'grid' | 'spotlight'>('grid');
+  // View: the user's saved default (Settings > Appearance > Meetings) decides
+  // whether a call opens in Campfire or the standard grid.
+  const [layout, setLayoutState] = useState<MeetingView>(() => {
+    const m: any = typeof window !== 'undefined' ? readLocalPrefs().meeting : null;
+    return m?.defaultView === 'campfire' ? 'campfire' : 'grid';
+  });
+  const viewChosenRef = useRef(false);
+  const setLayout = useCallback((v: MeetingView | ((prev: MeetingView) => MeetingView)) => {
+    viewChosenRef.current = true;
+    setLayoutState(v);
+  }, []);
+  const { prefs } = usePreferences();
+  useEffect(() => {
+    // Account prefs arrive after first paint; apply them unless the user already switched.
+    const m: any = prefs.meeting;
+    if (!viewChosenRef.current && m?.defaultView) setLayoutState(m.defaultView === 'campfire' ? 'campfire' : 'grid');
+  }, [prefs.meeting]);
   const [spotlightId, setSpotlightId] = useState<string | null>(null);
+  const layoutRef = useRef<MeetingView>(layout);
+  layoutRef.current = layout;
+  const [deafened, setDeafened] = useState(false);
+  const [reactionCounts, setReactionCounts] = useState<Record<string, number>>({});
 
   const [waitingList, setWaitingList] = useState<any[]>([]);
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [unreadChats, setUnreadChats] = useState(0);
+  const showChatRef = useRef(false);
+  showChatRef.current = showChat;
   const [inviteEmail, setInviteEmail] = useState('');
   const [showInvite, setShowInvite] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -1155,7 +1181,22 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
   const [liveSubtitle, setLiveSubtitle] = useState<any>(null);
   const [transcriptHistory, setTranscriptHistory] = useState<any[]>([]);
   const [showSubtitles, setShowSubtitles] = useState(false);
-  const [preferredLanguage, setPreferredLanguage] = useState('en');
+  const [preferredLanguage, setPreferredLanguage] = useState(() => {
+    try { return localStorage.getItem('conferio:captionLang') || (navigator.language || 'en').split('-')[0]; } catch { return 'en'; }
+  });
+  // Captions default to the account's preferred language (same one the AI
+  // notetaker translates into), unless chosen in this browser.
+  useEffect(() => {
+    let local: string | null = null;
+    try { local = localStorage.getItem('conferio:captionLang'); } catch { /* ignore */ }
+    if (local) return;
+    fetch('/api/preferred-language').then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (d?.preferredLanguage) {
+        setPreferredLanguage(d.preferredLanguage);
+        socketRef.current?.emit('set-language', d.preferredLanguage);
+      }
+    }).catch(() => {});
+  }, []);
   const [socket, setSocket] = useState<Socket | null>(null);
 
   const localAudioStream = useMemo(() => {
@@ -1168,22 +1209,42 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
     return null;
   }, [localParticipant]);
 
-  const { startCapture, stopCapture } = useAudioCapture(localAudioStream, socket, roomId);
+  const { startCapture, stopCapture, isCapturing } = useAudioCapture(localAudioStream, socket, roomId);
+  const sendDataRef = useRef<((d: object) => void) | null>(null);
 
   useEffect(() => {
     return () => stopCapture();
   }, [stopCapture]);
 
-  const toggleSubtitles = useCallback(() => {
-    if (!subtitlesEnabled) {
-      startCapture();
+  /** The local mic as it is *now* (the track may be created after joining). */
+  const currentMicStream = useCallback((): MediaStream | null => {
+    const pub = roomRef.current?.localParticipant.getTrackPublication(Track.Source.Microphone);
+    const t = pub?.track?.mediaStreamTrack;
+    return t && t.readyState === 'live' ? new MediaStream([t]) : null;
+  }, []);
+
+  // Captions are meeting-wide: when anyone turns them on, every participant
+  // streams their own mic so all speakers get transcribed and translated.
+  const setCaptions = useCallback((on: boolean, broadcast: boolean) => {
+    if (on) {
+      startCapture(currentMicStream());
       setSubtitlesEnabled(true);
     } else {
       stopCapture();
       setSubtitlesEnabled(false);
       setLiveSubtitle(null);
     }
-  }, [subtitlesEnabled, startCapture, stopCapture]);
+    if (broadcast) sendDataRef.current?.({ type: 'captions', on, name: lobbyData.displayName });
+  }, [startCapture, stopCapture, currentMicStream, lobbyData.displayName]);
+
+  const toggleSubtitles = useCallback(() => setCaptions(!subtitlesEnabled, true), [setCaptions, subtitlesEnabled]);
+
+  // Mic turned on (or socket reconnected) after captions started: start streaming it.
+  useEffect(() => {
+    if (!subtitlesEnabled || isMuted || isCapturing()) return;
+    const t = setTimeout(() => startCapture(currentMicStream()), 500);
+    return () => clearTimeout(t);
+  }, [subtitlesEnabled, isMuted, isCapturing, startCapture, currentMicStream, socket]);
   // ── End live subtitle state ─────────────────────────────────────────────
 
   // ── Socket.IO ───────────────────────────────────────────────────────────
@@ -1333,7 +1394,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
       newRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
         const first = speakers[0] || null;
         setDominantSpeaker(first);
-        if (first && !(first instanceof LocalParticipant) && layout === 'spotlight') {
+        if (first && !(first instanceof LocalParticipant) && layoutRef.current === 'spotlight' && !pinnedRef.current) {
           setSpotlightId(first.identity);
         }
       });
@@ -1368,7 +1429,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
               ...prev,
               { ...msg, id: Date.now().toString(), isSelf: false },
             ]);
-            setUnreadChats((n) => (showChat ? 0 : n + 1));
+            setUnreadChats((n) => (showChatRef.current ? 0 : n + 1));
             break;
 
           case 'hand_raise': {
@@ -1388,6 +1449,10 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
             });
             break;
           }
+
+          case 'captions':
+            setCaptionsRef.current?.(!!msg.on, false);
+            break;
 
           case 'force_mute':
             newRoom.localParticipant.setMicrophoneEnabled(false);
@@ -1448,6 +1513,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
 
   const addReactionBubble = useCallback(
     (emoji: string, name: string, image?: string) => {
+      setReactionCounts((c) => ({ ...c, [emoji]: (c[emoji] ?? 0) + 1 }));
       const id = Math.random().toString(36).slice(2);
       const x = 15 + Math.random() * 70;
       setReactions((prev) => [...prev, { id, emoji, name, image, x }]);
@@ -1462,8 +1528,24 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
   const sendData = useCallback((data: object) => {
     if (!roomRef.current) return;
     const encoded = new TextEncoder().encode(JSON.stringify(data));
-    roomRef.current.localParticipant.publishData(encoded, { reliable: true });
+    roomRef.current.localParticipant.publishData(encoded, { reliable: true }).catch(() => {});
   }, []);
+  sendDataRef.current = sendData;
+  const setCaptionsRef = useRef(setCaptions);
+  setCaptionsRef.current = setCaptions;
+  // Pinned (double-clicked) participant: spotlight stops following the speaker.
+  const pinnedRef = useRef(false);
+  const focusParticipant = useCallback((identity: string) => {
+    pinnedRef.current = true;
+    setSpotlightId(identity);
+    setLayout('spotlight');
+  }, [setLayout]);
+  const changeView = useCallback((v: MeetingView) => {
+    if (v !== 'spotlight') pinnedRef.current = false;
+    setLayout(v);
+  }, [setLayout]);
+
+  const recorder = useMeetingRecorder({ title: meeting.title, getMicStream: currentMicStream });
 
   // ── Actions ─────────────────────────────────────────────────────────────
 
@@ -1644,11 +1726,75 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
 
   // ── Render ───────────────────────────────────────────────────────────────
 
+  const inviteModal = (
+    <AnimatePresence>
+      {showInvite && (
+        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+          className="fixed top-16 right-4 bg-neutral-900 border border-neutral-800 rounded-2xl p-4 shadow-2xl w-80 z-[60]">
+          <h3 className="text-white font-semibold mb-3">Invite to Meeting</h3>
+          <div className="flex gap-2 mb-3">
+            <input aria-label="invite-email" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="Email address"
+              className="flex-1 bg-neutral-800 border border-neutral-700 rounded-xl px-3 py-2 text-white text-sm placeholder-neutral-500 focus:outline-none focus:border-blue-500"
+              onKeyDown={(e) => e.key === 'Enter' && sendInvite()} />
+            <button type="button" onClick={sendInvite} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium">Send</button>
+          </div>
+          <button type="button" onClick={copyLink} className="w-full flex items-center justify-center gap-2 py-2 bg-neutral-800 hover:bg-neutral-700 rounded-xl text-sm text-neutral-300">
+            <Copy className="w-3.5 h-3.5" />{copied ? 'Copied!' : 'Copy meeting link'}
+          </button>
+          <button type="button" onClick={() => setShowInvite(false)} className="absolute top-3 right-3 p-1 text-neutral-500 hover:text-white"><X className="size-4" /></button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+
+  if (layout === 'campfire') {
+    return (
+      <>
+        <RoomAudio room={room} deafened={deafened} />
+        <ReactionOverlay reactions={reactions} />
+        <CampfireRoom
+          room={room}
+          title={meeting.title}
+          entries={allParticipants}
+          speakingId={dominantSpeaker?.identity}
+          raisedHands={raisedHands}
+          isHost={meeting.isHost}
+          view={layout}
+          onView={changeView}
+          onFocus={focusParticipant}
+          isMuted={isMuted} onToggleMute={toggleMute}
+          isVideoOn={isVideoOn} onToggleVideo={toggleVideo}
+          isScreenSharing={isScreenSharing} onToggleShare={() => { toggleScreenShare(); }}
+          deafened={deafened} onToggleDeafen={() => setDeafened((d) => !d)}
+          isHandRaised={isHandRaised} onRaiseHand={raiseHand}
+          onReact={sendReaction} reactionCounts={reactionCounts}
+          messages={chatMessages} onSendChat={sendChatMessage} unreadChats={unreadChats} onChatSeen={() => setUnreadChats(0)}
+          transcript={transcriptHistory} liveSubtitle={liveSubtitle}
+          lang={preferredLanguage}
+          onLang={(lang) => {
+            setPreferredLanguage(lang);
+            try { localStorage.setItem('conferio:captionLang', lang); } catch { /* ignore */ }
+            fetch('/api/preferred-language', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: lang }) }).catch(() => {});
+            socket?.emit('join-meeting-room', { roomName: roomId, userId: user?.id || 'anonymous', name: lobbyData.displayName, preferredLanguage: lang });
+          }}
+          subtitlesOn={subtitlesEnabled} onToggleSubtitles={toggleSubtitles}
+          recording={recorder.recording} uploadingRecording={recorder.uploading} onToggleRecording={recorder.toggle}
+          onInvite={() => setShowInvite(true)} onCopyLink={copyLink} copied={copied}
+          onLeave={leaveMeeting} leaving={isLeaving}
+          onMute={muteParticipant} onKick={kickParticipant}
+          waitingCount={waitingList.length}
+        />
+        {inviteModal}
+      </>
+    );
+  }
+
   return (
     <div
       className="fixed inset-0 flex flex-col bg-[#191919] select-none overflow-hidden"
       style={{ fontFamily: "'DM Sans', sans-serif" }}
     >
+      <RoomAudio room={room} deafened={deafened} />
       {/* Floating reaction bubbles */}
       <ReactionOverlay reactions={reactions} />
 
@@ -1750,13 +1896,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
             )}
           </button>
 
-          <button type="button"
-            onClick={() => setLayout((v) => (v === 'grid' ? 'spotlight' : 'grid'))}
-            className="px-3 py-1.5 rounded-full bg-neutral-800 text-neutral-300 hover:bg-neutral-700 transition-colors"
-            title="Toggle layout"
-          >
-            <Layout className="size-4" />
-          </button>
+          <ViewMenu view={layout} onChange={changeView} />
 
           <button type="button"
             onClick={() => setShowInvite((v) => !v)}
@@ -1854,6 +1994,30 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                   ))}
                 </div>
               </div>
+            ) : layout === 'filmstrip' && spotlightEntry ? (
+              <div className="h-full flex flex-col gap-2">
+                <div className="flex-1 min-h-0">
+                  <MeetingParticipantTile
+                    participant={spotlightEntry.p}
+                    isLocal={spotlightEntry.isLocal}
+                    isHost={meeting.isHost}
+                    isSpeaking={dominantSpeaker?.identity === spotlightEntry.p.identity}
+                    isHandRaised={raisedHands.has(spotlightEntry.p.identity)}
+                    onSpotlight={() => focusParticipant(spotlightEntry.p.identity)}
+                  />
+                </div>
+                {sidebarParticipants.length > 0 && (
+                  <div className="h-28 flex gap-2 overflow-x-auto flex-shrink-0">
+                    {sidebarParticipants.map(({ p, isLocal }) => (
+                      <div key={p.identity} className="h-full flex-shrink-0" style={{ aspectRatio: '16/9' }}>
+                        <MeetingParticipantTile participant={p} isLocal={isLocal} isHost={meeting.isHost} compact
+                          isSpeaking={dominantSpeaker?.identity === p.identity} isHandRaised={raisedHands.has(p.identity)}
+                          onSpotlight={() => setSpotlightId(p.identity)} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : layout === 'spotlight' && spotlightEntry ? (
               <div className="h-full flex gap-2">
                 <div className="flex-1">
@@ -1879,7 +2043,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                           compact
                           isSpeaking={dominantSpeaker?.identity === p.identity}
                           isHandRaised={raisedHands.has(p.identity)}
-                          onSpotlight={() => setSpotlightId(p.identity)}
+                          onSpotlight={() => focusParticipant(p.identity)}
                         />
                       </div>
                     ))}
@@ -1902,7 +2066,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                     isHandRaised={raisedHands.has(p.identity)}
                     onKick={meeting.isHost && !isLocal ? () => kickParticipant(p.identity) : undefined}
                     onMute={meeting.isHost && !isLocal ? () => muteParticipant(p.identity) : undefined}
-                    onSpotlight={() => { setLayout('spotlight'); setSpotlightId(p.identity); }}
+                    onSpotlight={() => focusParticipant(p.identity)}
                   />
                 ))}
                 {overflowCount > 0 && (
@@ -1952,7 +2116,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                         compact
                         isSpeaking={dominantSpeaker?.identity === p.identity}
                         isHandRaised={raisedHands.has(p.identity)}
-                        onSpotlight={() => { setLayout('spotlight'); setSpotlightId(p.identity); setShowOverflowCarousel(false); }}
+                        onSpotlight={() => { focusParticipant(p.identity); setShowOverflowCarousel(false); }}
                       />
                     </div>
                   ))}
@@ -1983,7 +2147,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                   onApprove={approveWaiting}
                   onKick={kickParticipant}
                   onMute={muteParticipant}
-                  onSpotlight={(id) => { setLayout('spotlight'); setSpotlightId(id); }}
+                  onSpotlight={(id) => focusParticipant(id)}
                 />
               )}
               {showChat && (
@@ -2005,6 +2169,7 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
                   preferredLanguage={preferredLanguage}
                   onChangeLanguage={(lang) => {
                     setPreferredLanguage(lang);
+                    try { localStorage.setItem('conferio:captionLang', lang); } catch { /* ignore */ }
                     socket?.emit('join-meeting-room', {
                       roomName: roomId,
                       userId: user?.id || 'anonymous',
@@ -2109,7 +2274,15 @@ export default function MeetingRoom({ roomId, meeting, user, lobbyData }: Meetin
             {subtitlesEnabled ? 'Subtitles On' : 'Subtitles'}
           </button>
 
-          <div className="" />
+          <button type="button"
+            onClick={recorder.toggle}
+            disabled={recorder.uploading}
+            title={recorder.recording ? 'Stop recording (saved to Clips)' : 'Record this meeting to Clips'}
+            className={`flex items-center gap-1 px-2 py-2 text-[10px] font-medium ${recorder.recording ? 'text-red-400' : 'text-neutral-400 hover:text-white'}`}
+          >
+            <span className={`size-2 rounded-full bg-red-500 ${recorder.recording ? 'animate-pulse' : 'opacity-70'}`} />
+            {recorder.uploading ? 'Saving...' : recorder.recording ? 'Stop rec' : 'Record'}
+          </button>
 
           <motion.button
             whileHover={{ scale: 1.05 }}

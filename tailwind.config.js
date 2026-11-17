@@ -206,18 +206,29 @@ module.exports = {
     		},
     		boxShadow: {
     			'menu-dark': '0 1rem 3rem -1rem rgba(59,130,246,.2)',
-    			menu: '0 1rem 3rem -1rem rgba(0,0,0,.3)'
+    			menu: '0 1rem 3rem -1rem rgba(0,0,0,.3)',
+    			// Theme-adjustable (see lib/theme). Defaults equal Tailwind's built-ins.
+    			sm: 'var(--shadow-sm)',
+    			DEFAULT: 'var(--shadow)',
+    			md: 'var(--shadow-md)',
+    			lg: 'var(--shadow-lg)',
+    			xl: 'var(--shadow-xl)',
+    			'2xl': 'var(--shadow-2xl)'
     		},
     		width: {
     			'86': '21.5rem',
     			'120': '30rem'
     		},
     		borderRadius: {
+    			// Theme-adjustable via --radius (default 0.5rem keeps the stock sizes).
+    			'2xl': 'calc(var(--radius) + 8px)',
+    			xl: 'calc(var(--radius) + 4px)',
     			lg: 'var(--radius)',
     			md: 'calc(var(--radius) - 2px)',
     			sm: 'calc(var(--radius) - 4px)'
     		},
     		fontFamily: {
+    			sans: ['var(--font-sans)'],
     			jakarta: [
     				'Plus Jakarta Sans',
     				'sans-serif'

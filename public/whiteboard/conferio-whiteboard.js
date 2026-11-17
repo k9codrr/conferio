@@ -9578,7 +9578,7 @@ function applyTheme(editor, theme) {
   }
 }
 async function initWhiteboard(options) {
-  const { container, boardId, theme = "dark", readonly = false, onSave, onLoad } = options;
+  const { container, boardId, theme = "dark", readonly = false, onSave, onLoad, onUpdate, waitForPeers } = options;
   const [
     { AffineEditorContainer: AffineEditorContainer2 },
     { DocCollection: DocCollection2, Schema: Schema3 },
@@ -9623,6 +9623,18 @@ async function initWhiteboard(options) {
       console.warn("[wb] Load error:", e5);
     }
   }
+  // [conferio-realtime] pull current state from peers before deciding the board is empty
+  if (waitForPeers) {
+    try {
+      const peerStates = await waitForPeers();
+      for (const st of peerStates || []) {
+        const bin = base64ToU8(st);
+        if (bin.length > 2) applyUpdate(doc2.spaceDoc, bin, "remote");
+      }
+    } catch (e5) {
+      console.warn("[wb] peer sync failed:", e5);
+    }
+  }
   doc2.load(() => {
     if (!doc2.root) {
       const pageId = doc2.addBlock("affine:page", {});
@@ -9657,13 +9669,41 @@ async function initWhiteboard(options) {
   };
   doc2.spaceDoc.on("update", (update, origin) => {
     if (origin === "remote") return;
-    console.log("[wb] Doc updated (origin:", origin, "), scheduling save...");
+    // [conferio-realtime] stream local edits to collaborators
+    try {
+      onUpdate?.(u8ToBase64(update));
+    } catch (e5) {
+      console.warn("[wb] onUpdate failed:", e5);
+    }
     scheduleSave();
   });
-  return () => {
+  const cleanup = () => {
     if (saveTimer) clearTimeout(saveTimer);
     editor.remove();
   };
+  // [conferio-realtime] handles for the host page
+  cleanup.applyRemoteUpdate = (b64) => {
+    try {
+      applyUpdate(doc2.spaceDoc, base64ToU8(b64), "remote");
+    } catch (e5) {
+      console.warn("[wb] remote update failed:", e5);
+    }
+  };
+  cleanup.getState = () => u8ToBase64(encodeStateAsUpdate(doc2.spaceDoc));
+  cleanup.setReadonly = (ro) => {
+    try {
+      doc2.awarenessStore.setReadonly(doc2.blockCollection, !!ro);
+    } catch (e5) {
+      console.warn("[wb] setReadonly failed:", e5);
+    }
+  };
+  cleanup.saveNow = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    const state = encodeStateAsUpdate(doc2.spaceDoc);
+    if (state.length > 10) onSave?.(u8ToBase64(state));
+  };
+  cleanup.editor = editor;
+  return cleanup;
 }
 if (typeof window !== "undefined") {
   window.ConferioWhiteboard = { initWhiteboard };

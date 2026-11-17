@@ -1,257 +1,143 @@
-// // import { EventEmitter } from 'events';
-
-// // const emitter = new EventEmitter();
-// // emitter.setMaxListeners(0);
-
-// // export const SSE_EVENTS = {
-// //   NEW_CLIP: 'new-clip',
-// //   CLIP_DELETED: 'clip-deleted',
-// //   // Kanban events
-// //   TASK_CREATED: 'task:created',
-// //   TASK_UPDATED: 'task:updated',
-// //   TASK_MOVED: 'task:moved',
-// //   TASK_DELETED: 'task:deleted',
-// // } as const;
-
-// // export function broadcastClipEvent(event: string, data: any) {
-// //   emitter.emit(event, data);
-// // }
-
-// // export function subscribeToClipEvent(event: string, callback: (data: any) => void) {
-// //   emitter.on(event, callback);
-// //   return () => emitter.off(event, callback);
-// // }
-
-// import { EventEmitter } from 'events';
-
-// const emitter = new EventEmitter();
-// emitter.setMaxListeners(0);
-
-// // Track active SSE connections per board
-// const activeConnections = new Map<string, number>();
-
-// export const SSE_EVENTS = {
-//   NEW_CLIP: 'new-clip',
-//   CLIP_DELETED: 'clip-deleted',
-//   TASK_CREATED: 'task:created',
-//   TASK_UPDATED: 'task:updated',
-//   TASK_MOVED: 'task:moved',
-//   TASK_DELETED: 'task:deleted',
-// } as const;
-
-// export function broadcastClipEvent(event: string, data: any) {
-//   const listenerCount = emitter.listenerCount(event);
-//   console.log(`[SSE] Broadcasting ${event} | Listeners: ${listenerCount} | Board: ${data.boardId}`);
-  
-//   if (listenerCount === 0) {
-//     console.warn(`[SSE] NO LISTENERS for ${event}! Event lost.`);
-//   }
-  
-//   emitter.emit(event, data);
-// }
-
-// export function subscribeToClipEvent(event: string, callback: (data: any) => void) {
-//   emitter.on(event, callback);
-//   console.log(`[SSE] Listener added for ${event}. Total: ${emitter.listenerCount(event)}`);
-  
-//   return () => {
-//     emitter.off(event, callback);
-//     console.log(`[SSE] Listener removed for ${event}. Total: ${emitter.listenerCount(event)}`);
-//   };
-// }
-
-// export function getActiveListenerCount(event: string): number {
-//   return emitter.listenerCount(event);
-// }
-
-
-// import fs from 'fs';
-// import path from 'path';
-// import { EventEmitter } from 'events';
-
-// const BROADCAST_FILE = path.join(process.cwd(), '.sse-broadcast.json');
-// const localEmitter = new EventEmitter();
-// localEmitter.setMaxListeners(0);
-
-// // Ensure broadcast file exists
-// if (!fs.existsSync(BROADCAST_FILE)) {
-//   fs.writeFileSync(BROADCAST_FILE, JSON.stringify([]));
-// }
-
-// function readBroadcasts(): any[] {
-//   try {
-//     const data = fs.readFileSync(BROADCAST_FILE, 'utf-8');
-//     return JSON.parse(data);
-//   } catch {
-//     return [];
-//   }
-// }
-
-// function writeBroadcasts(broadcasts: any[]) {
-//   fs.writeFileSync(BROADCAST_FILE, JSON.stringify(broadcasts.slice(-50))); // Keep last 50
-// }
-
-// export const SSE_EVENTS = {
-//   NEW_CLIP: 'new-clip',
-//   CLIP_DELETED: 'clip-deleted',
-//   TASK_CREATED: 'task:created',
-//   TASK_UPDATED: 'task:updated',
-//   TASK_MOVED: 'task:moved',
-//   TASK_DELETED: 'task:deleted',
-// } as const;
-
-// let lastCheckTime = Date.now();
-
-// export function broadcastClipEvent(event: string, data: any) {
-//   console.log(`[SSE-SHARED] Broadcasting ${event} to board:${data.boardId}`);
-  
-//   // Write to shared file
-//   const broadcasts = readBroadcasts();
-//   broadcasts.push({
-//     event,
-//     data,
-//     timestamp: Date.now(),
-//     processId: process.pid,
-//   });
-//   writeBroadcasts(broadcasts);
-  
-//   // Also emit locally for same-process listeners
-//   localEmitter.emit(event, data);
-// }
-
-// export function subscribeToClipEvent(event: string, callback: (data: any) => void) {
-//   localEmitter.on(event, callback);
-  
-//   // Check for missed events from other processes
-//   const checkInterval = setInterval(() => {
-//     const broadcasts = readBroadcasts();
-//     const newBroadcasts = broadcasts.filter(b => 
-//       b.event === event && 
-//       b.timestamp > lastCheckTime &&
-//       b.processId !== process.pid
-//     );
-    
-//     if (newBroadcasts.length > 0) {
-//       console.log(`[SSE-SHARED] Replaying ${newBroadcasts.length} missed events`);
-//       newBroadcasts.forEach(b => callback(b.data));
-//     }
-    
-//     lastCheckTime = Date.now();
-//   }, 500); // Check every 500ms
-  
-//   return () => {
-//     localEmitter.off(event, callback);
-//     clearInterval(checkInterval);
-//   };
-// }
-
 // lib/sse.ts
-import { EventEmitter } from 'events';
-import IORedis from 'ioredis';
-
-const localEmitter = new EventEmitter();
-localEmitter.setMaxListeners(0);
+//
+// Process-wide realtime event bus used by the SSE endpoints (/api/sse and
+// /api/notifications/stream).
+//
+// Why globalThis: in Next.js every API route is bundled separately (always in
+// dev, often in prod), so a module-level EventEmitter in one route is a
+// different object from the one in /api/sse. Keeping the bus on globalThis
+// makes publish() in any route reach every SSE connection in this process.
+// Redis pub/sub (UPSTASH_REDIS_URL) fans events out to other instances; each
+// instance ignores its own echo so listeners fire exactly once.
+//
+// Audience scoping — put one of these on the payload so /api/sse only sends
+// the event to people allowed to see it:
+//   userIds: string[]   → only those users
+//   boardId: string     → board owner + board members
+//   teamId:  string     → members of that team
+// Events with none of these go to every signed-in user (keep payloads minimal).
+import { EventEmitter } from "events";
+import IORedis from "ioredis";
+import { randomUUID } from "crypto";
 
 export const SSE_EVENTS = {
-  NEW_CLIP: 'new-clip',
-  CLIP_DELETED: 'clip-deleted',
-  TASK_CREATED: 'task:created',
-  TASK_UPDATED: 'task:updated',
-  TASK_MOVED: 'task:moved',
-  TASK_DELETED: 'task:deleted',
+  NEW_CLIP: "new-clip",
+  CLIP_DELETED: "clip-deleted",
+  TASK_CREATED: "task:created",
+  TASK_UPDATED: "task:updated",
+  TASK_MOVED: "task:moved",
+  TASK_DELETED: "task:deleted",
+  BOARD_UPDATED: "board:updated",
+  // Calendar / scheduling
+  EVENT_CREATED: "event:created",
+  EVENT_UPDATED: "event:updated",
+  EVENT_DELETED: "event:deleted",
+  MEETING_CHANGED: "meeting:changed",
+  REMINDER_CHANGED: "reminder:changed",
+  REMINDER_DUE: "reminder:due",
+  CALENDAR_CHANGED: "calendar:changed",
+  // Whiteboard collaboration
+  WHITEBOARD: "whiteboard",
+  // Platform admin live activity
+  ADMIN_ACTIVITY: "admin:activity",
+  // In-app notifications (consumed by /api/notifications/stream)
+  NOTIFICATION: "notification",
 } as const;
 
-// ─── Redis clients ────────────────────────────────────────────────────────────
-// Pub/Sub requires dedicated connections — they can't be reused for commands.
-// We lazy-init them so the module is safe to import on the edge/client side.
+export type BusMessage = { event: string; data: any };
+type Listener = (msg: BusMessage) => void;
 
-let publisher: IORedis | null = null;
-let subscriber: IORedis | null = null;
-
-function getPublisher(): IORedis {
-  if (!publisher) {
-    publisher = new IORedis(process.env.UPSTASH_REDIS_URL!, {
-      maxRetriesPerRequest: 3,
-      tls: {}, // required for rediss:// on Upstash
-    });
-    publisher.on('error', (err) => console.warn('[SSE:pub] Redis error:', err.message));
-  }
-  return publisher;
+interface Bus {
+  emitter: EventEmitter;
+  instanceId: string;
+  pub: IORedis | null;
+  sub: IORedis | null;
+  redisReady: boolean;
 }
 
-function getSubscriber(): IORedis {
-  if (!subscriber) {
-    subscriber = new IORedis(process.env.UPSTASH_REDIS_URL!, {
-      maxRetriesPerRequest: 3,
-      tls: {},
-    });
-    subscriber.on('error', (err) => console.warn('[SSE:sub] Redis error:', err.message));
+const CHANNEL = "conferio:sse";
+const g = globalThis as unknown as { __conferioBus?: Bus };
+
+function bus(): Bus {
+  if (!g.__conferioBus) {
+    const emitter = new EventEmitter();
+    emitter.setMaxListeners(0);
+    g.__conferioBus = { emitter, instanceId: randomUUID(), pub: null, sub: null, redisReady: false };
+    initRedis(g.__conferioBus);
   }
-  return subscriber;
+  return g.__conferioBus;
 }
 
-// ─── Broadcast ────────────────────────────────────────────────────────────────
+function initRedis(b: Bus) {
+  const url = process.env.UPSTASH_REDIS_URL;
+  if (!url) return; // single-instance mode: local emitter only
+  const opts = {
+    maxRetriesPerRequest: 3,
+    lazyConnect: false,
+    ...(url.startsWith("rediss://") ? { tls: {} } : {}),
+  };
+  try {
+    b.pub = new IORedis(url, opts);
+    b.sub = new IORedis(url, opts);
+    b.pub.on("error", (e) => console.warn("[bus:pub]", e.message));
+    b.sub.on("error", (e) => console.warn("[bus:sub]", e.message));
+    b.sub.subscribe(CHANNEL).then(() => { b.redisReady = true; }).catch((e) => console.warn("[bus] subscribe failed:", e.message));
+    b.sub.on("message", (_ch: string, raw: string) => {
+      try {
+        const { origin, event, data } = JSON.parse(raw);
+        if (origin === b.instanceId) return; // already delivered locally
+        b.emitter.emit("*", { event, data });
+        b.emitter.emit(event, data);
+      } catch {
+        /* malformed */
+      }
+    });
+  } catch (e: any) {
+    console.warn("[bus] Redis unavailable, local-only:", e?.message);
+    b.pub = b.sub = null;
+  }
+}
+
+/** Publish an event to every SSE listener on every instance. Never throws. */
+export async function publish(event: string, data: any): Promise<void> {
+  const b = bus();
+  const payload = { ...data, type: data?.type ?? event };
+  b.emitter.emit("*", { event, data: payload });
+  b.emitter.emit(event, payload);
+  if (b.pub) {
+    try {
+      await b.pub.publish(CHANNEL, JSON.stringify({ origin: b.instanceId, event, data: payload }));
+    } catch (e: any) {
+      console.warn("[bus] publish failed:", e?.message);
+    }
+  }
+}
+
+/** Listen to every event. Returns an unsubscribe function. */
+export function subscribeAll(cb: Listener): () => void {
+  const b = bus();
+  b.emitter.on("*", cb);
+  return () => b.emitter.off("*", cb);
+}
+
+// ─── Backwards-compatible API (used across existing routes) ─────────────────
 
 export async function broadcastClipEvent(event: string, data: any) {
-  console.log(`[SSE] Broadcasting "${event}"`);
-
-  const payload = JSON.stringify({ event, data });
-
-  try {
-    await getPublisher().publish('sse:channel', payload);
-  } catch (err) {
-    console.warn('[SSE] Redis publish failed, local-only:', err);
-  }
-
-  // Fast path: same-instance listeners get it immediately without round-trip
-  localEmitter.emit(event, data);
+  return publish(event, data);
 }
 
-// ─── Subscribe ────────────────────────────────────────────────────────────────
-
-let redisSubscribed = false;
-
-function ensureRedisSubscription() {
-  if (redisSubscribed) return;
-  redisSubscribed = true;
-
-  const sub = getSubscriber();
-
-  sub.subscribe('sse:channel', (err) => {
-    if (err) console.warn('[SSE] subscribe error:', err.message);
-  });
-
-  sub.on('message', (_channel: string, raw: string) => {
-    try {
-      const { event, data } = JSON.parse(raw);
-      // Re-emit on localEmitter so all subscribeToClipEvent callbacks fire
-      localEmitter.emit(`redis:${event}`, data);
-    } catch {
-      // malformed payload — ignore
-    }
-  });
+export function subscribeToClipEvent(event: string, callback: (data: any) => void): () => void {
+  const b = bus();
+  b.emitter.on(event, callback);
+  return () => b.emitter.off(event, callback);
 }
 
-export function subscribeToClipEvent(
-  event: string,
-  callback: (data: any) => void
-): () => void {
-  // Local listener — catches same-instance broadcasts immediately (no Redis round-trip)
-  localEmitter.on(event, callback);
+/** Convenience: realtime event scoped to a team's members. */
+export function publishToTeam(teamId: string, event: string, data: Record<string, any> = {}) {
+  return publish(event, { ...data, teamId });
+}
 
-  // Cross-instance listener — fired when Redis delivers a message from another instance
-  const redisEventKey = `redis:${event}`;
-  localEmitter.on(redisEventKey, callback);
-
-  // Ensure we're subscribed to Redis (idempotent)
-  try {
-    ensureRedisSubscription();
-  } catch (err) {
-    console.warn('[SSE] Could not set up Redis subscription:', err);
-  }
-
-  return () => {
-    localEmitter.off(event, callback);
-    localEmitter.off(redisEventKey, callback);
-  };
+/** Convenience: realtime event scoped to specific users. */
+export function publishToUsers(userIds: string[], event: string, data: Record<string, any> = {}) {
+  return publish(event, { ...data, userIds: Array.from(new Set(userIds.filter(Boolean))) });
 }

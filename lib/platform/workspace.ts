@@ -177,6 +177,7 @@ export async function resolveUserTeam(userId: string, teamSlug?: string | null) 
 
 export interface AccessResult {
   isPlatformAdmin: boolean;
+  teamRole: string | null;
   suspendedUser: boolean;
   workspace: { id: string; name: string; slug: string; status: string } | null;
   planKey: string | null;
@@ -184,7 +185,6 @@ export interface AccessResult {
   modules: Record<ModuleKey, boolean>;
 }
 
-const ALL_ON = () => Object.fromEntries(MODULE_KEYS.map((k) => [k, true])) as Record<ModuleKey, boolean>;
 const ALL_OFF = () => Object.fromEntries(MODULE_KEYS.map((k) => [k, false])) as Record<ModuleKey, boolean>;
 
 // Hot path: called by the module gate on navigations and by the sidebar. Kept to one
@@ -232,13 +232,17 @@ async function loadAccess(userId: string, teamSlug?: string | null): Promise<Acc
   if (ws?.plan && planIsCurrent(ws)) plan = ws.plan;
   else plan = await getDefaultPlanCached();
 
+  // `modules` is what this workspace really has, for admins too, so the sidebar and
+  // dashboards hide switched-off modules. Admins still bypass the route gate
+  // (middleware checks isPlatformAdmin), so they can open anything by URL.
   let modules: Record<ModuleKey, boolean>;
-  if (admin) modules = ALL_ON();
-  else if (ws?.status === 'SUSPENDED' || user?.suspendedAt) modules = ALL_OFF();
+  if (!admin && (ws?.status === 'SUSPENDED' || user?.suspendedAt)) modules = ALL_OFF();
+  else if (admin && !ws) modules = effectiveModules({ global, planModules: MODULE_KEYS as unknown as string[], overrides: {} });
   else modules = effectiveModules({ global, planModules: plan?.modules ?? [], overrides: ws ? toModuleMap(ws.moduleOverrides) : {} });
 
   return {
     isPlatformAdmin: admin,
+    teamRole: (bySlug ?? first)?.role ?? null,
     suspendedUser: Boolean(user?.suspendedAt),
     workspace: ws ? { id: ws.id, name: ws.name, slug: ws.slug, status: ws.status } : null,
     planKey: ws ? plan?.key ?? null : null,

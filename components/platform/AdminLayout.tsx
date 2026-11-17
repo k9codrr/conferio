@@ -10,6 +10,7 @@ import {
   Building2,
   CreditCard,
   LayoutDashboard,
+  ListTree,
   Menu,
   ScrollText,
   Settings,
@@ -27,6 +28,7 @@ import { Spinner } from './ui';
 const NAV = [
   { href: '/admin', label: 'Overview', icon: LayoutDashboard, exact: true },
   { href: '/admin/activity', label: 'Live activity', icon: Activity },
+  { href: '/admin/logs', label: 'Activity logs', icon: ListTree },
   { href: '/admin/workspaces', label: 'Workspaces', icon: Building2 },
   { href: '/admin/teams', label: 'Teams', icon: UsersRound },
   { href: '/admin/users', label: 'Users', icon: Users },

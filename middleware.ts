@@ -14,7 +14,7 @@ import { matchPath, MODULE_BY_KEY, MODULE_COOKIE, type ModuleKey } from './lib/p
 
 type Access = { signedIn: boolean; isPlatformAdmin?: boolean; modules?: Record<ModuleKey, boolean> };
 
-const TTL_MS = 30_000;
+const TTL_MS = 10_000;
 const cache = new Map<string, { at: number; data: Access }>();
 
 const SESSION_COOKIES = ['__Secure-next-auth.session-token', 'next-auth.session-token'];

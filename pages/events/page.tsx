@@ -4,6 +4,8 @@ import { useSession } from 'next-auth/react';
 import { redirect, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useLiveInvalidate } from 'hooks/useLiveInvalidate';
+import FieldsPopoverButton from '@/components/custom-fields/FieldsPopoverButton';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter } from '@/components/ui/card';
 import Link from 'next/link';
@@ -60,6 +62,7 @@ export default function Events() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const queryClient = useQueryClient();
+  useLiveInvalidate([['events']], { sources: ['Event'] });
   const [copied, setCopied] = useState<boolean>(false);
   // const [open, setOpen] = useState<boolean>(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -333,9 +336,12 @@ export default function Events() {
                     </span>
                   </h2>
                 </div>
+<div className="flex items-center gap-2">
                 <span className="dark:text-[#ffffff] text-xs border dark:border-[#343434] flex items-center px-1 gap-1 rounded-sm w-fit dark:bg-[#222]">
                   <Clock className="h-3 w-3 dark:text-[#B9B9B9]" /> <p className="dark:text-[#ffffff] text-xs font-medium">{event.duration}m</p>
                 </span>
+                <FieldsPopoverButton entity="event" recordId={event.id} className="h-6" />
+                </div>
               </div>
             </td>
 

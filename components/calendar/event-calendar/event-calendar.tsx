@@ -65,6 +65,10 @@ export interface EventCalendarProps {
   onEventDelete?: (eventId: string) => void;
   className?: string;
   initialView?: CalendarView;
+  /** Return true to handle the click yourself (skips the built-in dialog). */
+  onEventSelect?: (event: CalendarEvent) => boolean | void;
+  /** Return true to handle empty-slot clicks yourself (skips the built-in dialog). */
+  onSlotSelect?: (start: Date) => boolean | void;
 }
 
 const EMPTY_EVENTS: CalendarEvent[] = []
@@ -77,6 +81,8 @@ export function EventCalendar({
   onEventDelete,
   className,
   initialView = "month",
+  onEventSelect,
+  onSlotSelect,
 }: EventCalendarProps) {
   // Use the shared calendar context instead of local state
   const { currentDate, setCurrentDate } = useCalendarContext();
@@ -155,13 +161,12 @@ export function EventCalendar({
   };
 
   const handleEventSelect = (event: CalendarEvent) => {
-    console.log("Event selected:", event); // Debug log
+    if (onEventSelect?.(event) === true) return;
     setSelectedEvent(event);
     setIsEventDialogOpen(true);
   };
 
   const handleEventCreate = (startTime: Date) => {
-    console.log("Creating new event at:", startTime); // Debug log
 
     // Snap to 15-minute intervals
     const minutes = startTime.getMinutes();
@@ -177,6 +182,8 @@ export function EventCalendar({
       startTime.setSeconds(0);
       startTime.setMilliseconds(0);
     }
+
+    if (onSlotSelect?.(new Date(startTime)) === true) return;
 
     const newEvent: CalendarEvent = {
       id: "",

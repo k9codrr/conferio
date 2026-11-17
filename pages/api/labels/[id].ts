@@ -42,6 +42,7 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '../../../lib/auth';
 import { prisma } from '../../../lib/prisma';
+import { broadcastClipEvent, SSE_EVENTS } from '@/lib/sse';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const session = await getServerSession(req, res, authOptions);
@@ -97,6 +98,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           data: { name, color },
         });
 
+        broadcastClipEvent(SSE_EVENTS.BOARD_UPDATED, { type: 'board:updated', boardId: label.boardId });
         return res.status(200).json(updated);
       } catch (error) {
         return res.status(500).json({ error: 'Failed to update label' });
@@ -108,6 +110,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           where: { id },
         });
 
+        broadcastClipEvent(SSE_EVENTS.BOARD_UPDATED, { type: 'board:updated', boardId: label.boardId });
         return res.status(204).end();
       } catch (error) {
         return res.status(500).json({ error: 'Failed to delete label' });

@@ -23,6 +23,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Settings, Clock, Calendar } from 'lucide-react'
 import { Checkbox } from '@/components/ui/checkbox';
 import IntegrationsPage from './integrations';
+import ThemeCustomizer from '@/components/theme/ThemeCustomizer';
+import LayoutPreferences from '@/components/theme/LayoutPreferences';
 
 const DAYS = [
   'SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 
@@ -192,12 +194,17 @@ export default function Dashboard({
             <TabsTrigger value="Teams">Teams</TabsTrigger>
             <TabsTrigger value="Integration">Integrations</TabsTrigger>
             <TabsTrigger value="Availability">Availability</TabsTrigger>
+            <TabsTrigger value="Appearance">Appearance</TabsTrigger>
             {/* <TabsTrigger value="Support">Support</TabsTrigger> */}
           </TabsList>
           <div className="grid gap-6" aria-label="Button">
             <TabsContent value="account">
           
 <UpdateAccount user={user} allowEmailChange={allowEmailChange} />
+            </TabsContent>
+            <TabsContent value="Appearance" className="space-y-6">
+              <LayoutPreferences />
+              <ThemeCustomizer />
             </TabsContent>
             <TabsContent value="Security">
              <Security sessionStrategy="jwt"/>

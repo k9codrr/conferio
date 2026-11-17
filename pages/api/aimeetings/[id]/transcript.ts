@@ -271,7 +271,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         where: {
           meetingId: id,
           userId: session.user.id,
-          language: lang,
+          language: requested, // translations are stored under the base code (e.g. "hi", not "hi-IN")
         },
       });
 

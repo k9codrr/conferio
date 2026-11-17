@@ -1,5 +1,6 @@
 'use client';
 
+import FieldsPopoverButton from '@/components/custom-fields/FieldsPopoverButton';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/router';
 import { useEffect, useRef, useState } from 'react';
@@ -502,6 +503,9 @@ export default function DocEditorView() {
             <div className="flex-1 w-full rounded-md dark:bg-[#111111] bg-[#FFFFFF] h-[92vh]">
               <div className="relative group">
                 <SidebarAwareTrigger pageCount={Array.isArray(pageTreeNodes) ? pageTreeNodes.length : 0} />
+                {page?.id && (
+                  <FieldsPopoverButton entity="doc" recordId={page.id} teamSlug={teamSlug as string} className="absolute right-3 top-2 z-20" />
+                )}
               </div>
               <Editor page={page} onUpdate={updatePage} teamId={team?.id as string} />
             </div>

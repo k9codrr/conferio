@@ -10,6 +10,13 @@ export interface CalendarEvent {
   color?: EventColor;
   label?: string;
   location?: string;
+  /** Unified calendar feed: which module this item comes from */
+  source?: string;
+  /** Deep link into the owning module */
+  href?: string;
+  meta?: Record<string, any>;
 }
 
-export type EventColor = "blue" | "orange" | "violet" | "rose" | "emerald";
+export type EventColor =
+  | "blue" | "orange" | "violet" | "rose" | "emerald" | "sky" | "pink" | "fuchsia" | "cyan"
+  | "amber" | "teal" | "lime" | "yellow" | "red" | "indigo";

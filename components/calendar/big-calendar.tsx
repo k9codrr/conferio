@@ -1,491 +1,371 @@
 'use client';
 
-import { useState, useMemo, useEffect } from 'react';
-// import { addDays, setHours, setMinutes, getDay } from "date-fns";
-import { useCalendarContext } from '@/components/calendar/event-calendar/calendar-context';
+// Unified calendar: meetings, notetaker, tasks, to-dos, reminders, CRM,
+// timesheet, notes, docs, drive, clips and whiteboards in one view.
+// Data: /api/calendar/feed. Live: any relevant realtime event refetches.
+import { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { addDays, endOfMonth, format, startOfMonth } from 'date-fns';
+import { toast } from 'sonner';
+import { AlarmClock, ExternalLink, ListTodo, Video, X } from 'lucide-react';
 
-import {
-  EventCalendar,
-  type CalendarEvent,
-  type EventColor,
-} from '@/components/calendar/event-calendar';
+import { useCalendarContext } from '@/components/calendar/event-calendar/calendar-context';
+import { EventCalendar, type CalendarEvent, type EventColor } from '@/components/calendar/event-calendar';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { useSSE } from 'hooks/useSSE';
+import CustomFieldsPanel from '@/components/custom-fields/CustomFieldsPanel';
 import CircularText from '../ui/CircularTextLoader';
 
+export interface FeedSourceMeta { label: string; color: string; group: string }
+interface FeedItem {
+  id: string; source: string; title: string; description?: string;
+  start: string; end: string; allDay: boolean; color: string; href?: string; meta?: Record<string, any>;
+}
+
+/** Kept for backwards compatibility with older imports (calendar-context). */
 export const etiquettes = [
-  {
-    id: 'my-events',
-    name: 'My Events',
-    color: 'emerald' as EventColor,
-    isActive: true,
-  },
-  {
-    id: 'marketing-team',
-    name: 'Marketing Team',
-    color: 'orange' as EventColor,
-    isActive: true,
-  },
-  {
-    id: 'interviews',
-    name: 'Interviews',
-    color: 'violet' as EventColor,
-    isActive: true,
-  },
-  {
-    id: 'events-planning',
-    name: 'Events Planning',
-    color: 'blue' as EventColor,
-    isActive: true,
-  },
-  {
-    id: 'holidays',
-    name: 'Holidays',
-    color: 'rose' as EventColor,
-    isActive: true,
-  },
+  { id: 'my-events', name: 'My Events', color: 'emerald' as EventColor, isActive: true },
+  { id: 'marketing-team', name: 'Marketing Team', color: 'orange' as EventColor, isActive: true },
+  { id: 'interviews', name: 'Interviews', color: 'violet' as EventColor, isActive: true },
+  { id: 'events-planning', name: 'Events Planning', color: 'blue' as EventColor, isActive: true },
+  { id: 'holidays', name: 'Holidays', color: 'rose' as EventColor, isActive: true },
 ];
+
+// Realtime event types that can change what the calendar shows.
+const LIVE_TYPES = new Set([
+  'task:created', 'task:updated', 'task:moved', 'task:deleted',
+  'event:created', 'event:updated', 'event:deleted', 'meeting:changed',
+  'reminder:changed', 'reminder:due', 'calendar:changed', 'new-clip', 'clip-deleted',
+]);
+
+// Sources the user can reschedule by dragging.
+const DRAGGABLE = new Set(['task', 'mytask', 'reminder']);
+
+export function useCalendarRange() {
+  const { currentDate } = useCalendarContext();
+  // Month ± a week covers month/week/day views; +5 weeks covers the agenda view.
+  return useMemo(() => {
+    const from = addDays(startOfMonth(currentDate), -7);
+    const to = addDays(endOfMonth(currentDate), 37);
+    return { from, to, key: `${format(from, 'yyyy-MM-dd')}_${format(to, 'yyyy-MM-dd')}` };
+  }, [currentDate]);
+}
 
 export default function Component() {
   const { data: session, status } = useSession();
-  const { push } = useRouter()
+  const { push } = useRouter();
   const queryClient = useQueryClient();
-  const [events, setEvents] = useState<CalendarEvent[]>([]);
-  const { isColorVisible } = useCalendarContext();
+  const { isSourceVisible } = useCalendarContext();
+  const range = useCalendarRange();
+  const [selected, setSelected] = useState<CalendarEvent | null>(null);
+  const [creatingAt, setCreatingAt] = useState<Date | null>(null);
 
   useEffect(() => {
-    if (status === 'unauthenticated') {
-      push('/auth/login');
-    }
-  }, [status]);
+    if (status === 'unauthenticated') push('/auth/login');
+  }, [status, push]);
 
-  // Fetch meetings from API
-  const {
-    data: meetingsData,
-    isLoading,
-    error,
-  } = useQuery({
-    queryKey: ['meetings'],
+  const feedKey = useMemo(() => ['calendar-feed', range.key], [range.key]);
+  const { data, isLoading, error } = useQuery({
+    queryKey: feedKey,
     queryFn: async () => {
-      const response = await fetch('/api/meetings/my-meetings');
-      if (!response.ok) throw new Error('Failed to fetch meetings');
-      return response.json();
+      const qs = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString() });
+      const res = await fetch(`/api/calendar/feed?${qs}`);
+      if (!res.ok) throw new Error('Failed to load calendar');
+      return res.json() as Promise<{ items: FeedItem[]; sources: Record<string, FeedSourceMeta> }>;
     },
     enabled: !!session,
+    placeholderData: keepPreviousData,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60_000, // catches uploads/edits from modules without realtime events
   });
 
-  // Map API data to CalendarEvent format
-  useEffect(() => {
-    if (meetingsData) {
-      // Check if meetingsData is an array or has a meetings property
-      const meetingsArray = Array.isArray(meetingsData)
-        ? meetingsData
-        : meetingsData.meetings || [];
+  // ── Realtime: refetch (debounced) when anything calendar-relevant changes ──
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refetchSoon = useCallback(() => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => queryClient.invalidateQueries({ queryKey: ['calendar-feed'] }), 400);
+  }, [queryClient]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useSSE((evt) => {
+    if (evt.type === 'sse:reconnected' || LIVE_TYPES.has(evt.type)) refetchSoon();
+  });
 
-      const mappedEvents: CalendarEvent[] = meetingsArray.map(
-        (meeting: any) => ({
-          id: meeting.id,
-          title: meeting.event.title || 'Untitled Meeting',
-          description: meeting.additionalInfo || undefined,
-          start: new Date(meeting.startTime || meeting.start || meeting.date),
-          end: new Date(meeting.endTime || meeting.end || meeting.date),
-          color: (meeting.color as EventColor) || 'rose',
-          location: meeting.event.locationType || undefined,
-          allDay: meeting.allDay || false,
-        })
+  const events: CalendarEvent[] = useMemo(
+    () =>
+      (data?.items ?? []).map((i) => ({
+        id: i.id,
+        title: i.title,
+        description: i.description,
+        start: new Date(i.start),
+        end: new Date(i.end),
+        allDay: i.allDay,
+        color: i.color as EventColor,
+        source: i.source,
+        href: i.href,
+        meta: i.meta,
+        label: data?.sources?.[i.source]?.label,
+      })),
+    [data]
+  );
+  const visibleEvents = useMemo(() => events.filter((e) => isSourceVisible(e.source)), [events, isSourceVisible]);
+
+  // ── Drag to reschedule ─────────────────────────────────────────────────────
+  const reschedule = useMutation({
+    mutationFn: async (e: CalendarEvent) => {
+      const rowId = e.id.split(':').slice(1).join(':');
+      const start = new Date(e.start);
+      let res: Response;
+      if (e.source === 'task') {
+        res = await fetch(`/api/tasks/${rowId}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dueDate: format(start, 'yyyy-MM-dd') }),
+        });
+      } else if (e.source === 'mytask') {
+        res = await fetch('/api/task', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: rowId, dueTime: start.toISOString() }),
+        });
+      } else {
+        res = await fetch(`/api/reminders/${rowId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dueDate: start.toISOString() }),
+        });
+      }
+      if (!res.ok) throw new Error('Could not reschedule');
+    },
+    onMutate: async (e) => {
+      await queryClient.cancelQueries({ queryKey: feedKey });
+      const prev = queryClient.getQueryData(feedKey);
+      queryClient.setQueryData(feedKey, (old: any) =>
+        old ? { ...old, items: old.items.map((i: FeedItem) => (i.id === e.id ? { ...i, start: new Date(e.start).toISOString(), end: new Date(e.end).toISOString() } : i)) } : old
       );
-      setEvents(mappedEvents);
-    }
-  }, [meetingsData]);
-
-  const cancelMeetingMutation = useMutation({
-    mutationFn: async (meetingId: string) => {
-      const response = await fetch(`/api/meeting/cancel/${meetingId}`, {
-        method: 'PUT',
-      });
-      if (!response.ok) throw new Error('Failed to cancel meeting');
-      return response.json();
+      return { prev };
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['meetings'] });
+    onError: (err: any, _e, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(feedKey, ctx.prev);
+      toast.error(err.message);
     },
+    onSettled: refetchSoon,
   });
 
-  const handleEventAdd = (event: CalendarEvent) => {
-    // Implement API call to create new meeting
-    console.log('Add event not implemented');
+  const handleEventUpdate = (e: CalendarEvent) => {
+    if (!e.source || !DRAGGABLE.has(e.source)) {
+      toast('This item can only be rescheduled from its own page.');
+      refetchSoon();
+      return;
+    }
+    reschedule.mutate(e);
   };
 
-  const handleEventUpdate = (updatedEvent: CalendarEvent) => {
-    // Implement API call to update meeting
-    console.log('Update event not implemented');
-  };
+  const cancelMeeting = useMutation({
+    mutationFn: async (meetingId: string) => {
+      const res = await fetch(`/api/meeting/cancel/${meetingId}`, { method: 'PUT' });
+      if (!res.ok) throw new Error('Failed to cancel meeting');
+    },
+    onSuccess: () => { toast.success('Meeting cancelled'); setSelected(null); refetchSoon(); },
+    onError: (e: any) => toast.error(e.message),
+  });
 
-  const handleEventDelete = (eventId: string) => {
-    cancelMeetingMutation.mutate(eventId);
-  };
-
-  const visibleEvents = useMemo(() => {
-    return events.filter((event) => isColorVisible(event.color));
-  }, [events, isColorVisible]);
-
-  if (status === 'loading' || isLoading) {
+  if (status === 'loading' || (isLoading && !data)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <CircularText
-          text="CONFERIO*CALLS*"
-          onHover="speedUp"
-          spinDuration={5}
-          className="custom-class"
-        />
+        <CircularText text="CONFERIO*CALENDAR*" onHover="speedUp" spinDuration={5} className="custom-class" />
       </div>
     );
   }
-
-  if (error) {
+  if (error && !data) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-red-500">
-          Error loading meetings: {(error as Error).message}
-        </div>
+      <div className="min-h-screen flex items-center justify-center text-red-500">
+        Error loading calendar: {(error as Error).message}
       </div>
     );
   }
-
-  if (status === 'unauthenticated') {
-    return null;
-  }
+  if (status === 'unauthenticated') return null;
 
   return (
-    <EventCalendar
-      events={visibleEvents}
-      onEventAdd={handleEventAdd}
-      onEventUpdate={handleEventUpdate}
-      onEventDelete={handleEventDelete}
-      initialView="week"
-    />
+    <>
+      <EventCalendar
+        events={visibleEvents}
+        onEventUpdate={handleEventUpdate}
+        onEventSelect={(e) => { setSelected(e); return true; }}
+        onSlotSelect={(start) => { setCreatingAt(start); return true; }}
+        initialView="week"
+      />
+
+      <EventDetails
+        event={selected}
+        sourceLabel={selected?.source ? data?.sources?.[selected.source]?.label : undefined}
+        onClose={() => setSelected(null)}
+        onOpen={(href) => { setSelected(null); push(href); }}
+        onCancelMeeting={(id) => cancelMeeting.mutate(id)}
+        cancelling={cancelMeeting.isPending}
+      />
+
+      <QuickCreate
+        at={creatingAt}
+        onClose={() => setCreatingAt(null)}
+        onCreated={() => { setCreatingAt(null); refetchSoon(); }}
+        onScheduleMeeting={() => { setCreatingAt(null); push('/meetings/new'); }}
+      />
+    </>
   );
 }
 
-// // components/calendar/big-calendar.tsx
-// 'use client';
+// ─── Details dialog ──────────────────────────────────────────────────────────
 
-// import { useState, useMemo, useEffect, useCallback } from 'react';
-// import { useCalendarContext } from '@/components/calendar/event-calendar/calendar-context';
-// import { useSession } from 'next-auth/react';
-// import { useRouter } from 'next/navigation';
-// import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+function EventDetails({ event, sourceLabel, onClose, onOpen, onCancelMeeting, cancelling }: {
+  event: CalendarEvent | null; sourceLabel?: string; onClose: () => void;
+  onOpen: (href: string) => void; onCancelMeeting: (id: string) => void; cancelling: boolean;
+}) {
+  const rowId = event?.id.split(':').slice(1).join(':');
+  const when = event
+    ? event.allDay
+      ? format(new Date(event.start), 'EEE, MMM d, yyyy')
+      : `${format(new Date(event.start), 'EEE, MMM d · h:mm a')} – ${format(new Date(event.end), 'h:mm a')}`
+    : '';
+  return (
+    <Dialog open={!!event} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        {event && (
+          <>
+            <DialogHeader>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{sourceLabel ?? event.source}</p>
+              <DialogTitle className="text-lg leading-snug">{event.title}</DialogTitle>
+              <DialogDescription>{when}</DialogDescription>
+            </DialogHeader>
+            {event.description && <p className="text-sm text-muted-foreground whitespace-pre-wrap">{event.description}</p>}
+            {event.meta && (
+              <div className="flex flex-wrap gap-1.5 text-[11px]">
+                {Object.entries(event.meta)
+                  .filter(([k, v]) => v !== null && v !== undefined && v !== '' && !['meetLink'].includes(k) && typeof v !== 'object')
+                  .map(([k, v]) => (
+                    <span key={k} className="rounded-md bg-muted px-1.5 py-0.5 text-muted-foreground">
+                      {k}: {String(v)}
+                    </span>
+                  ))}
+              </div>
+            )}
+            {rowId && (event.source === 'reminder' || event.source === 'mytask' || event.source === 'event') && (
+              <CustomFieldsPanel entity={event.source === 'event' ? 'event' : 'reminder'} recordId={rowId} className="border-t pt-3" />
+            )}
+            <DialogFooter className="gap-2 sm:gap-2">
+              {event.source === 'meeting' && rowId && (
+                <Button variant="outline" disabled={cancelling} onClick={() => onCancelMeeting(rowId)}>
+                  <X className="size-4" /> Cancel meeting
+                </Button>
+              )}
+              {event.meta?.meetLink && (
+                <Button variant="outline" onClick={() => window.open(event.meta!.meetLink, '_blank')}>
+                  <Video className="size-4" /> Join
+                </Button>
+              )}
+              {event.href && (
+                <Button onClick={() => onOpen(event.href!)}>
+                  <ExternalLink className="size-4" /> Open
+                </Button>
+              )}
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-// import {
-//   EventCalendar,
-//   type CalendarEvent,
-//   type EventColor,
-// } from '@/components/calendar/event-calendar';
-// import CircularText from '../ui/CircularTextLoader';
-// import { HolidayToggle } from './holiday-toggle';
-// import { type CountryCode } from './event-calendar/calendar-context';
+// ─── Quick create (click an empty slot) ──────────────────────────────────────
 
-// export const etiquettes = [
-//   {
-//     id: 'my-events',
-//     name: 'My Events',
-//     color: 'emerald' as EventColor,
-//     isActive: true,
-//   },
-//   {
-//     id: 'marketing-team',
-//     name: 'Marketing Team',
-//     color: 'orange' as EventColor,
-//     isActive: true,
-//   },
-//   {
-//     id: 'interviews',
-//     name: 'Interviews',
-//     color: 'violet' as EventColor,
-//     isActive: true,
-//   },
-//   {
-//     id: 'events-planning',
-//     name: 'Events Planning',
-//     color: 'blue' as EventColor,
-//     isActive: true,
-//   },
-//   {
-//     id: 'holidays',
-//     name: 'Holidays',
-//     color: 'rose' as EventColor,
-//     isActive: true,
-//   },
-// ];
+function QuickCreate({ at, onClose, onCreated, onScheduleMeeting }: {
+  at: Date | null; onClose: () => void; onCreated: () => void; onScheduleMeeting: () => void;
+}) {
+  const [kind, setKind] = useState<'reminder' | 'todo'>('reminder');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [when, setWhen] = useState('');
+  const [recurrence, setRecurrence] = useState('');
+  const [saving, setSaving] = useState(false);
 
-// interface NagerHoliday {
-//   date: string;
-//   localName: string;
-//   name: string;
-//   countryCode: string;
-//   global: boolean;
-//   types: string[];
-// }
+  useEffect(() => {
+    if (at) {
+      setTitle(''); setDescription(''); setRecurrence('');
+      setWhen(format(at, "yyyy-MM-dd'T'HH:mm"));
+    }
+  }, [at]);
 
-// // Fallback Indian holidays for 2025-2026 (used when API fails)
-// const FALLBACK_INDIAN_HOLIDAYS: { date: string; localName: string; name: string }[] = [
-//   { date: "2025-01-26", localName: "Republic Day", name: "Republic Day" },
-//   { date: "2025-03-14", localName: "Holi", name: "Holi" },
-//   { date: "2025-03-31", localName: "Idul Fitr", name: "Eid al-Fitr" },
-//   { date: "2025-04-14", localName: "Dr. Ambedkar Jayanti", name: "Ambedkar Jayanti" },
-//   { date: "2025-04-18", localName: "Good Friday", name: "Good Friday" },
-//   { date: "2025-05-01", localName: "Labour Day", name: "Labour Day" },
-//   { date: "2025-08-15", localName: "Independence Day", name: "Independence Day" },
-//   { date: "2025-08-27", localName: "Ganesh Chaturthi", name: "Ganesh Chaturthi" },
-//   { date: "2025-10-02", localName: "Gandhi Jayanti", name: "Gandhi Jayanti" },
-//   { date: "2025-10-20", localName: "Diwali", name: "Diwali" },
-//   { date: "2025-12-25", localName: "Christmas Day", name: "Christmas" },
-//   { date: "2026-01-26", localName: "Republic Day", name: "Republic Day" },
-//   { date: "2026-03-03", localName: "Holi", name: "Holi" },
-//   { date: "2026-03-20", localName: "Idul Fitr", name: "Eid al-Fitr" },
-//   { date: "2026-04-14", localName: "Dr. Ambedkar Jayanti", name: "Ambedkar Jayanti" },
-//   { date: "2026-04-03", localName: "Good Friday", name: "Good Friday" },
-//   { date: "2026-05-01", localName: "Labour Day", name: "Labour Day" },
-//   { date: "2026-08-15", localName: "Independence Day", name: "Independence Day" },
-//   { date: "2026-09-15", localName: "Ganesh Chaturthi", name: "Ganesh Chaturthi" },
-//   { date: "2026-10-02", localName: "Gandhi Jayanti", name: "Gandhi Jayanti" },
-//   { date: "2026-11-08", localName: "Diwali", name: "Diwali" },
-//   { date: "2026-12-25", localName: "Christmas Day", name: "Christmas" },
-// ];
+  const save = async () => {
+    if (!title.trim() || !when) return;
+    setSaving(true);
+    try {
+      const due = new Date(when);
+      const res =
+        kind === 'reminder'
+          ? await fetch('/api/reminders', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                title, description: description || null, dueDate: due.toISOString(),
+                recurrence: recurrence || null, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              }),
+            })
+          : await fetch('/api/task', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title, description, dueTime: due.toISOString(), priority: 'medium' }),
+            });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || 'Could not create');
+      toast.success(kind === 'reminder' ? 'Reminder set — you will get a sound alert and an email' : 'To-do added');
+      onCreated();
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
-// export default function BigCalendar() {
-//   const { data: session, status } = useSession();
-//   const { push } = useRouter();
-//   const queryClient = useQueryClient();
-//   const [events, setEvents] = useState<CalendarEvent[]>([]);
-//   const { isColorVisible, showHolidays, holidayCountry, currentDate } = useCalendarContext();
-//   const [holidays, setHolidays] = useState<CalendarEvent[]>([]);
-//   const [holidaysLoading, setHolidaysLoading] = useState(false);
-//   const [holidaysError, setHolidaysError] = useState<string | null>(null);
-
-//   useEffect(() => {
-//     if (status === 'unauthenticated') {
-//       push('/auth/login');
-//     }
-//   }, [status, push]);
-
-//   // Fetch meetings from API
-//   const {
-//     data: meetingsData,
-//     isLoading,
-//     error,
-//   } = useQuery({
-//     queryKey: ['meetings'],
-//     queryFn: async () => {
-//       const response = await fetch('/api/meetings/my-meetings');
-//       if (!response.ok) throw new Error('Failed to fetch meetings');
-//       return response.json();
-//     },
-//     enabled: !!session,
-//   });
-
-//   // Map API data to CalendarEvent format
-//   useEffect(() => {
-//     if (meetingsData) {
-//       const meetingsArray = Array.isArray(meetingsData)
-//         ? meetingsData
-//         : meetingsData.meetings || [];
-
-//       const mappedEvents: CalendarEvent[] = meetingsArray.map(
-//         (meeting: any) => ({
-//           id: meeting.id,
-//           title: meeting.event.title || 'Untitled Meeting',
-//           description: meeting.additionalInfo || undefined,
-//           start: new Date(meeting.startTime || meeting.start || meeting.date),
-//           end: new Date(meeting.endTime || meeting.end || meeting.date),
-//           color: (meeting.color as EventColor) || 'rose',
-//           location: meeting.event.locationType || undefined,
-//           allDay: meeting.allDay || false,
-//         })
-//       );
-//       setEvents(mappedEvents);
-//     }
-//   }, [meetingsData]);
-
-//   // Fetch public holidays when enabled
-//   const fetchHolidays = useCallback(async (year: number, code: CountryCode) => {
-//     setHolidaysLoading(true);
-//     setHolidaysError(null);
-    
-//     try {
-//       // Add timeout to fetch - abort after 5 seconds
-//       const controller = new AbortController();
-//       const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-//       const response = await fetch(
-//         `https://date.nager.at/api/v3/PublicHolidays/${year}/${code}`,
-//         { signal: controller.signal }
-//       );
-      
-//       clearTimeout(timeoutId);
-      
-//       if (!response.ok) {
-//         throw new Error(`API returned ${response.status}`);
-//       }
-      
-//       // Check if response has content
-//       const contentType = response.headers.get('content-type');
-//       if (!contentType || !contentType.includes('application/json')) {
-//         throw new Error('Invalid response format');
-//       }
-      
-//       const text = await response.text();
-//       if (!text || text.trim() === '') {
-//         throw new Error('Empty response from API');
-//       }
-      
-//       let data: NagerHoliday[];
-//       try {
-//         data = JSON.parse(text);
-//       } catch {
-//         throw new Error('Invalid JSON from API');
-//       }
-      
-//       if (!Array.isArray(data)) {
-//         throw new Error('Unexpected API response format');
-//       }
-      
-//       const mappedHolidays: CalendarEvent[] = data.map((holiday) => ({
-//         id: `holiday-${holiday.date}-${holiday.name}`,
-//         title: holiday.localName || holiday.name,
-//         description: `Public Holiday - ${holiday.name}`,
-//         start: new Date(holiday.date),
-//         end: new Date(holiday.date),
-//         color: 'rose' as EventColor,
-//         allDay: true,
-//         isHoliday: true,
-//       }));
-      
-//       setHolidays(mappedHolidays);
-//       setHolidaysError(null);
-//     } catch (err) {
-//       console.warn('Holiday API failed, using fallback:', err);
-      
-//       // Use fallback data for India
-//       if (code === 'IN') {
-//         const fallbackData = FALLBACK_INDIAN_HOLIDAYS.filter(h => {
-//           const holidayYear = new Date(h.date).getFullYear();
-//           return holidayYear === year;
-//         });
-        
-//         const mappedHolidays: CalendarEvent[] = fallbackData.map((holiday) => ({
-//           id: `holiday-${holiday.date}-${holiday.name}`,
-//           title: holiday.localName,
-//           description: `Public Holiday - ${holiday.name}`,
-//           start: new Date(holiday.date),
-//           end: new Date(holiday.date),
-//           color: 'rose' as EventColor,
-//           allDay: true,
-//           isHoliday: true,
-//         }));
-        
-//         setHolidays(mappedHolidays);
-//         setHolidaysError('Using offline holiday data (API unavailable)');
-//       } else {
-//         setHolidays([]);
-//         setHolidaysError('Failed to load holidays. Please try again later.');
-//       }
-//     } finally {
-//       setHolidaysLoading(false);
-//     }
-//   }, []);
-
-//   useEffect(() => {
-//     if (showHolidays) {
-//       fetchHolidays(currentDate.getFullYear(), holidayCountry);
-//     } else {
-//       setHolidays([]);
-//       setHolidaysError(null);
-//     }
-//   }, [showHolidays, holidayCountry, currentDate.getFullYear(), fetchHolidays]);
-
-//   // Merge holidays with regular events
-//   const allEvents = useMemo(() => {
-//     if (!showHolidays) return events;
-//     return [...events, ...holidays];
-//   }, [events, holidays, showHolidays]);
-
-//   const cancelMeetingMutation = useMutation({
-//     mutationFn: async (meetingId: string) => {
-//       const response = await fetch(`/api/meeting/cancel/${meetingId}`, {
-//         method: 'PUT',
-//       });
-//       if (!response.ok) throw new Error('Failed to cancel meeting');
-//       return response.json();
-//     },
-//     onSuccess: () => {
-//       queryClient.invalidateQueries({ queryKey: ['meetings'] });
-//     },
-//   });
-
-//   const handleEventAdd = (event: CalendarEvent) => {
-//     console.log('Add event not implemented');
-//   };
-
-//   const handleEventUpdate = (updatedEvent: CalendarEvent) => {
-//     console.log('Update event not implemented');
-//   };
-
-//   const handleEventDelete = (eventId: string) => {
-//     if (eventId.startsWith('holiday-')) return;
-//     cancelMeetingMutation.mutate(eventId);
-//   };
-
-//   const visibleEvents = useMemo(() => {
-//     return allEvents.filter((event) => isColorVisible(event.color));
-//   }, [allEvents, isColorVisible]);
-
-//   if (status === 'loading' || isLoading) {
-//     return (
-//       <div className="min-h-screen flex items-center justify-center">
-//         <CircularText
-//           text="CONFERIO*CALLS*"
-//           onHover="speedUp"
-//           spinDuration={5}
-//           className="custom-class"
-//         />
-//       </div>
-//     );
-//   }
-
-//   if (error) {
-//     return (
-//       <div className="min-h-screen flex items-center justify-center">
-//         <div className="text-red-500">
-//           Error loading meetings: {(error as Error).message}
-//         </div>
-//       </div>
-//     );
-//   }
-
-//   if (status === 'unauthenticated') {
-//     return null;
-//   }
-
-//   return (
-//     <div className="flex h-full gap-4">
-//       {/* <div className="w-64 flex-shrink-0 space-y-4">
-//         <HolidayToggle 
-//           isLoading={holidaysLoading} 
-//           error={holidaysError}
-//         />
-//       </div> */}
-      
-//       <div className="flex-1">
-//         <EventCalendar
-//           events={visibleEvents}
-//           onEventAdd={handleEventAdd}
-//           onEventUpdate={handleEventUpdate}
-//           onEventDelete={handleEventDelete}
-//           initialView="week"
-//         />
-//       </div>
-//     </div>
-//   );
-// }
+  return (
+    <Dialog open={!!at} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add to calendar</DialogTitle>
+          <DialogDescription>{at ? format(at, 'EEEE, MMM d · h:mm a') : ''}</DialogDescription>
+        </DialogHeader>
+        <div className="flex gap-1.5">
+          {([['reminder', 'Reminder', AlarmClock], ['todo', 'To-do', ListTodo]] as const).map(([k, label, Icon]) => (
+            <button key={k} type="button" onClick={() => setKind(k)}
+              className={`flex flex-1 items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm ${kind === k ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground'}`}>
+              <Icon className="size-4" />{label}
+            </button>
+          ))}
+          <button type="button" onClick={onScheduleMeeting}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground hover:bg-muted">
+            <Video className="size-4" />Meeting
+          </button>
+        </div>
+        <div className="space-y-2">
+          <Input autoFocus placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && save()} />
+          <Textarea placeholder="Notes (optional)" value={description} onChange={(e) => setDescription(e.target.value)} className="min-h-[70px]" />
+          <div className="flex gap-2">
+            <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="flex-1" />
+            {kind === 'reminder' && (
+              <select value={recurrence} onChange={(e) => setRecurrence(e.target.value)}
+                className="rounded-md border border-input bg-transparent px-2 text-sm">
+                <option value="">Once</option>
+                <option value="daily">Daily</option>
+                <option value="weekdays">Weekdays</option>
+                <option value="weekly">Weekly</option>
+                <option value="monthly">Monthly</option>
+              </select>
+            )}
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button disabled={saving || !title.trim()} onClick={save}>{saving ? 'Saving…' : 'Save'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
