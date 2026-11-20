@@ -23,7 +23,7 @@ import type { ActivityFeed, FeedItem, FeedKind } from '@/lib/dashboard/activity-
 const REFRESH_MS = 60_000;
 
 const KIND_META: Record<FeedKind, { icon: LucideIcon; tile: string; label: string }> = {
-  mail: { icon: Mail, label: 'Mail', tile: 'bg-rose-100 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400' },
+  mail: { icon: Mail, label: 'Mail', tile: 'bg-[#222] text-rose-600 dark:bg-rose-500/15 dark:text-rose-400' },
   crm: { icon: Briefcase, label: 'CRM', tile: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400' },
   file: { icon: FolderOpen, label: 'Drive', tile: 'bg-sky-100 text-sky-600 dark:bg-sky-500/15 dark:text-sky-400' },
   notetaker: { icon: Bot, label: 'AI Notetaker', tile: 'bg-violet-100 text-violet-600 dark:bg-violet-500/15 dark:text-violet-400' },
@@ -159,7 +159,7 @@ export function ActivityFeedCard() {
   const youCount = useMemo(() => (feed?.items ?? []).filter((i) => i.forYou).length, [feed]);
 
   return (
-    <div className="flex min-h-0 h-1/3 max-h-1/3 w-full flex-1 flex-col overflow-hidden rounded-[14px] border bg-gray-50 shadow-md dark:border-[#171717] dark:bg-neutral-950">
+    <div className="flex min-h-0 h-1/3 max-h-[28.333%] w-full flex-none flex-col overflow-hidden rounded-[14px] border bg-gray-50 shadow-md dark:border-[#171717] dark:bg-neutral-950">
       <div className="flex flex-shrink-0 items-center justify-between gap-2 px-4 pb-2 pt-3">
         <div className="flex items-center gap-2">
           <span className="relative flex size-2">

@@ -158,9 +158,9 @@ export function WidgetBody({
               </>
             );
             return href ? (
-              <Link key={label} href={href} className="rounded-lg border bg-background/50 p-3 hover:bg-accent">{inner}</Link>
+              <Link key={label} href={href} className="rounded-[10px] border bg-gray-50 p-3 hover:bg-accent dark:border-[#171717] dark:bg-[#0a0a0a]">{inner}</Link>
             ) : (
-              <div key={label} className="rounded-lg border bg-background/50 p-3">{inner}</div>
+              <div key={label} className="rounded-[10px] border bg-gray-50 p-3 dark:border-[#171717] dark:bg-[#0a0a0a]">{inner}</div>
             );
           })}
         </div>
@@ -326,7 +326,7 @@ export function WidgetBody({
         </div>
       );
     case 'activity':
-      return <div className="h-full overflow-hidden [&>*]:h-full [&>*]:border-0 [&>*]:shadow-none">{<ActivityFeedCard />}</div>;
+      return <div className="h-full overflow-hidden [&>*]:h-full [&>*]:max-h-none [&>*]:border-0 [&>*]:shadow-none [&>*]:rounded-none [&>*]:bg-transparent">{<ActivityFeedCard />}</div>;
     case 'quick_note':
       return <QuickNote value={widget.config?.text ?? ''} onChange={(text) => onConfig({ ...widget.config, text })} />;
     case 'clock':

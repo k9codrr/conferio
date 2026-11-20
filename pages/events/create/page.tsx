@@ -225,14 +225,31 @@ export default function CreateEvent({children}: {children: React.ReactNode}) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (!response.ok) throw new Error('Failed to create event');
-      return response.json();
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json?.message || 'Failed to create event');
+      return json;
     },
-    onSuccess: () => {
+    // No router.refresh() here: in the Pages router it's a full page reload.
+    // Drop the new event straight into the cached list; the SSE
+    // `calendar:changed` (source: Event) event keeps other tabs in sync.
+    onSuccess: (res) => {
+      const created = res?.event;
+      if (created) {
+        queryClient.setQueryData(['events'], (old: any) => {
+          if (!old?.data) return old;
+          const list = old.data.events ?? [];
+          if (list.some((e: any) => e.id === created.id)) return old;
+          return {
+            ...old,
+            data: { ...old.data, events: [{ _count: { meetings: 0 }, ...created }, ...list] },
+          };
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['events'] });
-      router.refresh();
       setIsOpen(false);
+      setFormData({ title: '', description: '', duration: 30, locationType: '' });
     },
+    onError: (e: any) => setError(e?.message || 'Failed to create event'),
   });
 
   const handleSubmit = (e: React.FormEvent) => {

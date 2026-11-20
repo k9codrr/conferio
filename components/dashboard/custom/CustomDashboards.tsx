@@ -97,9 +97,9 @@ function WidgetCard({
 
   return (
     <section ref={innerRef} style={style}
-      className={cn('group relative flex min-h-0 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-sm transition-shadow',
+      className={cn('group relative flex min-h-0 flex-col overflow-hidden rounded-[14px] border bg-white text-card-foreground shadow-md transition-shadow dark:border-[#171717] dark:bg-neutral-950',
         dragging && 'z-30 opacity-80 shadow-2xl ring-2 ring-primary')}>
-      <header className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2">
+      <header className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2 dark:border-[#171717]">
         <button type="button" aria-label="Drag card" {...dragHandle}
           className="cursor-grab touch-none rounded p-0.5 text-muted-foreground opacity-40 hover:bg-accent group-hover:opacity-100 active:cursor-grabbing">
           <GripVertical className="size-3.5" />
@@ -296,7 +296,7 @@ export function GridDashboard() {
       </Toolbar>
       <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={onDragEnd}>
         <SortableContext items={items.map((i) => i.id)} strategy={rectSortingStrategy}>
-          <div ref={ref} className={cn('grid grid-cols-12', editing && 'rounded-xl bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:16px_16px]')}
+          <div ref={ref} className={cn('grid grid-cols-12', editing && 'rounded-[14px] bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:16px_16px]')}
             style={{ gridAutoRows: `${ROW}px`, gap: GAP }}>
             {items.map((w) => (
               <SortableGridCard key={w.id} widget={w} data={data} editing={editing} narrow={narrow} colWidth={colWidth}
@@ -310,7 +310,7 @@ export function GridDashboard() {
         </SortableContext>
       </DndContext>
       {!items.length && (
-        <button type="button" onClick={() => setAdding(true)} className="rounded-xl border border-dashed p-10 text-sm text-muted-foreground hover:bg-accent">
+        <button type="button" onClick={() => setAdding(true)} className="rounded-[14px] border border-dashed bg-white p-10 text-sm text-muted-foreground hover:bg-accent dark:border-[#262626] dark:bg-neutral-950">
           Your board is empty — add your first card
         </button>
       )}
@@ -324,9 +324,9 @@ export function GridDashboard() {
 function FocusColumn({ id, children, empty }: { id: string; children: React.ReactNode; empty: boolean }) {
   const { setNodeRef, isOver } = useDroppable({ id });
   return (
-    <div ref={setNodeRef} className={cn('flex h-full min-h-[200px] flex-col gap-3 overflow-y-auto p-1.5 thin-scrollbar', isOver && 'rounded-xl bg-primary/5')}>
+    <div ref={setNodeRef} className={cn('flex h-full min-h-[200px] flex-col gap-3 overflow-y-auto p-1.5 thin-scrollbar', isOver && 'rounded-[14px] bg-primary/5')}>
       {children}
-      {empty && <div className="rounded-xl border border-dashed p-6 text-center text-xs text-muted-foreground">Drop cards here</div>}
+      {empty && <div className="rounded-[14px] border border-dashed p-6 text-center text-xs text-muted-foreground dark:border-[#262626]">Drop cards here</div>}
     </div>
   );
 }
@@ -454,7 +454,7 @@ export function FocusDashboard() {
         </PanelGroup>
         <DragOverlay>
           {activeWidget ? (
-            <div className="rounded-xl border bg-card px-3 py-2 text-xs font-semibold shadow-2xl ring-2 ring-primary">{activeWidget.title ?? WIDGETS[activeWidget.type].title}</div>
+            <div className="rounded-[14px] border bg-white px-3 py-2 text-xs font-semibold shadow-2xl ring-2 ring-primary dark:border-[#171717] dark:bg-neutral-950">{activeWidget.title ?? WIDGETS[activeWidget.type].title}</div>
           ) : null}
         </DragOverlay>
       </DndContext>

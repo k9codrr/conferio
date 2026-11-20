@@ -62,7 +62,8 @@ export default function Events() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const queryClient = useQueryClient();
-  useLiveInvalidate([['events']], { sources: ['Event'] });
+  // Live via SSE: event types + bookings (Meeting) changes refresh the list.
+  useLiveInvalidate([['events']], { sources: ['Event', 'Meeting'] });
   const [copied, setCopied] = useState<boolean>(false);
   // const [open, setOpen] = useState<boolean>(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -92,6 +93,12 @@ export default function Events() {
     enabled: !!session,
   });
 
+  // Optimistically edit the cached events list (instant UI, server confirms).
+  const patchEvents = (fn: (list: any[]) => any[]) =>
+    queryClient.setQueryData(['events'], (old: any) =>
+      old?.data ? { ...old, data: { ...old.data, events: fn(old.data.events ?? []) } } : old
+    );
+
   const togglePrivacyMutation = useMutation({
     mutationFn: async (eventId: string) => {
       const response = await fetch('/api/event/toggle-privacy', {
@@ -102,7 +109,14 @@ export default function Events() {
       if (!response.ok) throw new Error('Failed to toggle privacy');
       return response.json();
     },
-    onSuccess: () => {
+    onMutate: async (eventId: string) => {
+      await queryClient.cancelQueries({ queryKey: ['events'] });
+      const prev = queryClient.getQueryData(['events']);
+      patchEvents((list) => list.map((e) => (e.id === eventId ? { ...e, isPrivate: !e.isPrivate } : e)));
+      return { prev };
+    },
+    onError: (_e, _id, ctx: any) => ctx?.prev && queryClient.setQueryData(['events'], ctx.prev),
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
   });
@@ -120,7 +134,14 @@ export default function Events() {
       if (!response.ok) throw new Error('Failed to delete event');
       return response.json();
     },
-    onSuccess: () => {
+    onMutate: async (eventId: string) => {
+      await queryClient.cancelQueries({ queryKey: ['events'] });
+      const prev = queryClient.getQueryData(['events']);
+      patchEvents((list) => list.filter((e) => e.id !== eventId));
+      return { prev };
+    },
+    onError: (_e, _id, ctx: any) => ctx?.prev && queryClient.setQueryData(['events'], ctx.prev),
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
   });

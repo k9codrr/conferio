@@ -3895,6 +3895,7 @@ export default function BookingPage({
   const [newExternalEmail, setNewExternalEmail] = useState("");
   const [newExternalName, setNewExternalName] = useState("");
   const [isTeamMode, setIsTeamMode] = useState(false);
+  const [bookingError, setBookingError] = useState<string | null>(null);
   // Form data
   const [formData, setFormData] = useState({
     guestName: "",
@@ -3980,12 +3981,39 @@ const { data: teamMembersData, isLoading: isLoadingTeamMembers } = useQuery({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bookingData),
       });
-      if (!response.ok) throw new Error("Failed to book meeting");
-      return response.json();
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json?.message || "Failed to book meeting");
+      return json;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["availability"] });
+    // Optimistic: the confirmation screen doesn't need anything from the
+    // server, so show it immediately and let the request finish behind it.
+    // On failure we drop back to the form with the error.
+    onMutate: () => {
+      setBookingError(null);
       setStep("confirmed");
+    },
+    onSuccess: (_res, vars: any) => {
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+      // Bump the "N bookings" counter on /events without waiting for SSE.
+      queryClient.setQueryData(["events"], (old: any) =>
+        old?.data
+          ? {
+              ...old,
+              data: {
+                ...old.data,
+                events: (old.data.events ?? []).map((e: any) =>
+                  e.id === vars?.eventId
+                    ? { ...e, _count: { ...(e._count ?? {}), meetings: (e._count?.meetings ?? 0) + 1 } }
+                    : e
+                ),
+              },
+            }
+          : old
+      );
+    },
+    onError: (err: any) => {
+      setBookingError(err?.message || "Failed to book meeting");
+      setStep("book-meeting");
     },
   });
 
@@ -5001,6 +5029,9 @@ const { data: teamMembersData, isLoading: isLoadingTeamMembers } = useQuery({
                             </div>
                           )}
 
+                          {bookingError && (
+                            <p className="text-sm text-red-500 text-right">{bookingError}</p>
+                          )}
                           <div className="flex gap-2 items-center justify-end">
                             <Button
                               type="button"

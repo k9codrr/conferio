@@ -347,7 +347,7 @@ const DefaultDashboard = () => {
           </div>
 
           {/* ═══════ RIGHT COLUMN — Activity / Weather / CTA ═══════ */}
-          <div className=" px-10 max-2xl:px-5 max-xl:px-3 py-2.5 gap-y-3 h-full max-w-full min-w-0 flex flex-col justify-center items-center">
+          <div className=" px-10 max-2xl:px-5 max-xl:px-3 py-2.5 gap-y-3 h-full min-h-0 overflow-hidden max-w-full min-w-0 flex flex-col justify-start items-center">
 
             <ActivityFeedCard />
 

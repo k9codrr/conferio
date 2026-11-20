@@ -135,61 +135,57 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     // Only these roles can schedule team meetings
     const CAN_SCHEDULE_TEAM_MEETING = ['OWNER', 'ADMIN', 'MANAGER']
 
-    const [teamMemberCheck, event] = await Promise.all([
-      // Membership check (only if teamId provided)
+    // All lookups in ONE parallel round-trip (the DB is remote, so every
+    // sequential await adds latency). Integration rows are cheap to fetch
+    // speculatively; whichever the event's location type needs gets used.
+    let targetTeamId = teamId
+    const hasSelected = !teamId && selectedMemberIds?.length > 0
+
+    const [teamMemberCheck, event, teamData, selectedMembers, fallbackMember, integrations] = await Promise.all([
       teamId
         ? prisma.teamMember.findFirst({ where: { teamId, userId: user.id } })
-        : Promise.resolve(true), // skip check
-      // Event fetch
+        : Promise.resolve(true),
       prisma.event.findFirst({
         where: { id: eventId, userId: user.id },
-        include: { user: true },
+        select: { id: true, title: true, description: true, duration: true, locationType: true },
+      }),
+      teamId
+        ? prisma.team.findUnique({
+            where: { id: teamId },
+            select: {
+              name: true,
+              members: { select: { user: { select: { id: true, email: true, name: true } } } },
+            },
+          })
+        : Promise.resolve(null),
+      hasSelected
+        ? prisma.teamMember.findMany({
+            where: { userId: { in: selectedMemberIds } },
+            select: { user: { select: { id: true, email: true, name: true } } },
+          })
+        : Promise.resolve([]),
+      hasSelected
+        ? prisma.teamMember.findFirst({ where: { userId: selectedMemberIds[0] }, select: { teamId: true } })
+        : Promise.resolve(null),
+      prisma.integration.findMany({
+        where: {
+          userId: user.id,
+          appType: { in: [IntegrationAppType.GOOGLE_MEET_AND_CALENDAR, IntegrationAppType.ZOOM_MEETING] },
+        },
       }),
     ])
 
     if (teamId && !teamMemberCheck) {
       return res.status(HTTPSTATUS.FORBIDDEN).json({ message: 'Not a member of this team' })
     }
-    
-    // Check if user has permission to schedule team meetings
-    if (teamId && teamMemberCheck && !CAN_SCHEDULE_TEAM_MEETING.includes(teamMemberCheck.role as any)) {
-      return res.status(HTTPSTATUS.FORBIDDEN).json({ 
-        message: 'Only owners, admins, and managers can schedule team meetings' 
+    if (teamId && teamMemberCheck && !CAN_SCHEDULE_TEAM_MEETING.includes((teamMemberCheck as any).role)) {
+      return res.status(HTTPSTATUS.FORBIDDEN).json({
+        message: 'Only owners, admins, and managers can schedule team meetings'
       })
-    }
-
-    if (teamId && !teamMemberCheck) {
-      return res.status(HTTPSTATUS.FORBIDDEN).json({ message: 'Not a member of this team' })
     }
     if (!event) {
       return res.status(HTTPSTATUS.NOT_FOUND).json({ message: 'Event not found' })
     }
-
-    // ─── PHASE 2: Parallel attendee + team data fetch ───────────────────────
-    let targetTeamId = teamId
-
-    const [teamData, selectedMembers, fallbackMember] = await Promise.all([
-      // Fetch full team+members in one query (also gives us team name — no extra query later)
-      teamId
-        ? prisma.team.findUnique({
-            where: { id: teamId },
-            include: { members: { include: { user: true } } },
-          })
-        : Promise.resolve(null),
-      // Fetch selected individual members (if no teamId)
-      !teamId && selectedMemberIds?.length
-        ? prisma.teamMember.findMany({
-            where: { userId: { in: selectedMemberIds } },
-            include: { user: true },
-          })
-        : Promise.resolve([]),
-      // Fallback: infer teamId from first selectedMember
-      !teamId && selectedMemberIds?.length
-        ? prisma.teamMember.findFirst({
-            where: { userId: selectedMemberIds[0] },
-          })
-        : Promise.resolve(null),
-    ])
 
     if (!teamId && fallbackMember) {
       targetTeamId = fallbackMember.teamId
@@ -251,9 +247,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       calendarAppType = 'CONFERIO'
 
     } else if (locationType === 'ZOOM_MEETING' || locationType === EventLocationType.ZOOM_MEETING) {
-      const zoomIntegration = await prisma.integration.findFirst({
-        where: { userId: user.id, appType: IntegrationAppType.ZOOM_MEETING },
-      })
+      const zoomIntegration = integrations.find(i => i.appType === IntegrationAppType.ZOOM_MEETING)
       const zoomMeeting = await createZoomMeeting({
         topic: title || event.title,
         startTime: new Date(startTime),
@@ -268,9 +262,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       locationType === 'GOOGLE_MEET_AND_CALENDAR' ||
       locationType === EventLocationType.GOOGLE_MEET_AND_CALENDAR
     ) {
-      const integration = await prisma.integration.findFirst({
-        where: { userId: user.id, appType: IntegrationAppType.GOOGLE_MEET_AND_CALENDAR },
-      })
+      const integration = integrations.find(i => i.appType === IntegrationAppType.GOOGLE_MEET_AND_CALENDAR)
       if (integration) {
         googleCalendarClient.setCredentials({
           access_token: integration.accessToken,
@@ -328,7 +320,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       include: {
         meetingAttendees: true,
         teamMeetingLink: true,
-        event: true,
       },
     })
 
